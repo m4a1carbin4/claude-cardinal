@@ -52,15 +52,67 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
   (Claude Code + tmux)          (Claude Code + tmux)
 ```
 
+자세한 건:
+- [세션 시스템](docs/session-system.md) ([English](docs/session-system.en.md))
+- [웹 터미널은 어떻게 도는가](docs/web-terminal.md) ([English](docs/web-terminal.en.md))
+
 ## 할 일
 
-- [ ] tmux + WebSocket 터미널 붙여서 Claude Code 띄우기
-- [ ] 세션 목록 / ID / 히스토리 관리
-- [ ] 워커 / 마스터 구분
-- [ ] 마스터가 세션 띄워서 일 넘기기
+- [x] tmux + WebSocket 터미널 붙여서 Claude Code 띄우기
+- [x] 세션 목록 / ID / 히스토리 관리
+- [x] 워커 / 마스터 구분
+- [x] 마스터가 세션 띄워서 일 넘기기
 - [ ] 이벤트 채널 + 외부 메시지 서버 연동
 - [ ] 세션별 이벤트 수신 옵션
 
 ## 실행 방법
 
-아직 없음. 만들면 적기.
+필요한 거: tmux, node 22+, pnpm, claude
+
+```sh
+pnpm install && pnpm build
+ln -s "$PWD/bin/cardinal" ~/.local/bin/cardinal   # 선택. PATH 어딘가에
+```
+
+### 세션 굴리기
+
+```sh
+cardinal new w1                                  # 워커 하나 띄우기
+cardinal new boss --role master                  # 마스터
+cardinal new w2 --prompt "테스트 돌려봐" --wait   # 첫 지시 주고 끝날 때까지 대기
+cardinal new w3 -- --model sonnet               # -- 뒤는 claude 인자 그대로
+
+cardinal ls                                      # 목록 + 상태
+cardinal send w1 "README 읽고 요약해" --wait      # 보내고 끝나면 마지막 응답 출력
+cardinal keys w1 Down Enter                      # 다이얼로그 같은 거 키로 처리
+cardinal screen w1                               # 지금 화면
+cardinal report w1                               # 살아있나? 작업중/완료? + 마지막 턴 응답 전체
+cardinal last w1                                 # 마지막 턴 응답 텍스트만
+cardinal attach w1                               # tmux로 직접 붙기
+cardinal kill w1 --purge
+```
+
+세션은 전부 고정 작업 폴더 하나에서 돔: `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`).
+그래서 트랜스크립트 경로가 세션 ID만으로 정해짐.
+
+상태는 Claude Code 훅으로 찍음: `starting → idle ⇄ busy`, 승인 기다리면 `waiting`, 꺼지면 `ended`.
+기록은 `~/.cardinal/sessions/<이름>/` 에 (`meta.json`, `state.json`, `events.jsonl`).
+
+작업 폴더 처음 쓸 땐 신뢰 다이얼로그가 떠서 `starting`에 멈춤 → `cardinal keys <이름> Down Enter` 한 번이면 이후론 안 뜸.
+
+### 웹
+
+```sh
+cardinal serve                         # http://127.0.0.1:7878
+CARDINAL_TOKEN=xxx cardinal serve      # 토큰 걸기 (?token=xxx 또는 Bearer)
+```
+
+- `GET  /` 웹 터미널 (세션 목록 + xterm.js)
+- `WS   /ws/term/<이름>?cols=&rows=[&readonly=1]` 터미널 I/O
+  - 보내기: `{"t":"i","d":"입력"}`, `{"t":"r","c":120,"r":40}` (리사이즈)
+  - 받기: 바이너리 프레임 = 터미널 출력 그대로
+- `WS   /ws/events` 상태 바뀔 때마다 `{"type":"sessions","sessions":[...]}`
+- `GET/POST /api/sessions`, `GET/DELETE /api/sessions/<이름>`
+- `POST /api/sessions/<이름>/send` `{"text","wait","timeoutMs","submit","force"}`
+- `POST /api/sessions/<이름>/keys` `{"keys":["Enter"]}`
+- `GET  /api/sessions/<이름>/screen?lines=`, `GET /api/sessions/<이름>/last`, `GET /api/sessions/<이름>/report`

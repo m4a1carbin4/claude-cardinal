@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# cardinal CLI 진입점. 심링크로 불려도 원래 위치 기준으로 dist 찾기.
+exec node "$(dirname "$(realpath "$0")")/../dist/cli.js" "$@"
