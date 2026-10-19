@@ -1,6 +1,8 @@
 # How the web terminal works
 
-[한국어](web-terminal.md) · Related: [session system](session-system.en.md)
+[한국어](web-terminal.md) · Related: [session system](session-system.en.md), [server](server.en.md)
+
+> This started as a Node server (node-pty) and now runs in the Python server (`ptyprocess`). The mechanism is exactly the same.
 
 The question: the server only relays bytes over a WebSocket, so how does `index.html` turn that into a live tmux screen?
 
@@ -9,12 +11,12 @@ Short answer: **the server never builds a screen.** It hands tmux a pseudo-termi
 ## Big picture
 
 ```
- browser (index.html)                     cardinal serve (node)                   tmux
+ browser (index.html)                     cardinal-server (python)                tmux
 ┌───────────────────────┐   WebSocket   ┌────────────────────────┐   pty    ┌──────────────────────────┐
-│ xterm.js              │◀── binary ────│ node-pty               │◀────────│ tmux client              │
+│ xterm.js              │◀── binary ────│ ptyprocess             │◀────────│ tmux client              │
 │  · parse bytes        │   (output)    │  └ tmux attach-session │         │ (attach-session process) │
 │  · draw screen        │               │                        │         │        ▲ unix socket     │
-│  · keys → bytes       │── JSON ──────▶│ term.write / resize    │────────▶│ tmux server              │
+│  · keys → bytes       │── JSON ──────▶│ os.write / setwinsize  │────────▶│ tmux server              │
 └───────────────────────┘ (input/resize)└────────────────────────┘         │  └ pane (pty) ─ claude    │
                                                                             └──────────────────────────┘
 ```
@@ -22,9 +24,9 @@ Short answer: **the server never builds a screen.** It hands tmux a pseudo-termi
 The key is that there are two ptys:
 
 1. **pane pty**: created by the tmux server when it launched claude. claude draws into it. It exists regardless of any browser.
-2. **attach pty**: created by the server with node-pty for every WebSocket connection. `tmux attach-session` runs inside it.
+2. **attach pty**: created by the server with `ptyprocess` for every WebSocket connection. `tmux attach-session` runs inside it.
 
-So the browser isn't seeing claude's output directly. It's seeing **what a tmux client draws**. It's exactly like running `tmux attach` in a terminal app, with "node-pty + WebSocket + xterm.js" standing in for the terminal app.
+So the browser isn't seeing claude's output directly. It's seeing **what a tmux client draws**. It's exactly like running `tmux attach` in a terminal app, with "pty + WebSocket + xterm.js" standing in for the terminal app.
 
 ## The pieces
 
@@ -33,10 +35,10 @@ So the browser isn't seeing claude's output directly. It's seeing **what a tmux 
 A pair of kernel-provided file handles (master / slave).
 
 - The program given the slave side (here, the tmux client) thinks it's on a real terminal, so it draws colors, cursor movement and full-screen UI normally.
-- The program holding the master side (node-pty) reads that output and writes keystrokes in.
+- The program holding the master side (the server, via `ptyprocess`) reads that output and writes keystrokes in.
 - The pty also holds the window size (cols/rows). Changing it sends `SIGWINCH` to the program on the slave side.
 
-A plain `spawn` with pipes won't work: tmux sees "not a terminal" and refuses to attach. That's why node-pty is needed.
+A plain `spawn` with pipes won't work: tmux sees "not a terminal" and refuses to attach. That's why a pty library (`ptyprocess`) is needed.
 
 ### tmux client / server
 
@@ -49,7 +51,7 @@ The client sees `TERM=xterm-256color` and draws using xterm-style control codes.
 
 ### xterm.js
 
-A browser terminal emulator library, loaded by `index.html` from a CDN (`public/index.html:58-59`).
+A browser terminal emulator library, loaded by `index.html` from a CDN (`server/cardinal_server/static/index.html:66-67`).
 
 - Parses ANSI/VT control codes from incoming bytes, keeps an internal character grid (rows × cols, with color/attributes per cell) and renders it.
 - Turns keyboard input into the bytes a terminal would send (`↑` → `ESC [ A`, `Enter` → `\r`, `Ctrl+C` → `0x03`).
@@ -59,7 +61,7 @@ A browser terminal emulator library, loaded by `index.html` from a CDN (`public/
 
 ## The actual bytes
 
-First bytes received when attaching node-pty to a tiny tmux session (40×5, printing `hello world`):
+First bytes received when attaching through a pty to a tiny tmux session (40×5, printing `hello world`). Captured with node-pty back then; the bytes come from tmux, so they're the same:
 
 ```
 \e[?1049h               switch to alternate (full-screen) buffer
@@ -81,13 +83,13 @@ The queries in the middle (`\e[c` etc.) are answered by xterm.js immediately via
 
 ### 1. Opening the page
 
-1. `GET /` → the server returns `public/index.html` as-is (`serve` in `src/server.ts`).
+1. `GET /` → the server returns `static/index.html` as-is (`index` in `server/cardinal_server/app.py`).
 2. The browser fetches xterm.js and FitAddon from the CDN.
-3. It connects to the `/ws/events` WebSocket for the session list (`public/index.html:87-88`). That's a separate status channel, unrelated to the terminal.
+3. It connects to the `/ws/events` WebSocket for the session list (`static/index.html:95-96`). That's a separate status channel, unrelated to the terminal.
 
 ### 2. Clicking a session → attaching
 
-Browser (`public/index.html:99-111`):
+Browser (`static/index.html:107-119`):
 
 ```js
 term = new Terminal({...});
@@ -100,13 +102,15 @@ ws.binaryType = 'arraybuffer';
 
 cols/rows go in the query string so the pty is created at the right size and tmux draws the first screen at that size.
 
-Server (`src/server.ts:99-110`, upgrade handling at `:194`):
+Server (`server/cardinal_server/terminal.py:18-42`, WebSocket route is `ws_term` in `app.py`):
 
-```ts
-const term = pty.spawn('tmux', ['attach-session', '-t', '=cardinal-<name>'], {
-  name: 'xterm-256color', cols, rows, ...
-});
-term.onData((d) => ws.send(Buffer.from(d, 'utf8')));
+```python
+args = ["tmux", "attach-session", "-t", f"={tmux_name}"]
+proc = PtyProcess.spawn(args, dimensions=(rows, cols), env={**os.environ, "TERM": "xterm-256color"})
+loop.add_reader(proc.fd, on_readable)       # when the pty has output
+...
+data = os.read(proc.fd, 65536)              # read the bytes
+await ws.send_bytes(data)                   # send them as-is
 ```
 
 `tmux attach` **redraws the whole current screen** as soon as it attaches. So the browser sees the current screen immediately, with no separate snapshot (`capture-pane`) needed.
@@ -117,7 +121,7 @@ term.onData((d) => ws.send(Buffer.from(d, 'utf8')));
 claude writes to the pane pty
  → tmux server updates the pane's screen state
  → tmux client redraws only what changed, as control codes (into the attach pty)
- → node-pty onData
+ → server os.read(pty fd)
  → ws.send(binary)
  → browser ws.onmessage → term.write(new Uint8Array(e.data))
  → xterm.js parses and updates the screen
@@ -131,7 +135,7 @@ The tmux client redraws only changed cells, not the whole screen, so a spinner i
 key pressed in the browser
  → xterm.js onData(d)  (d = terminal-style bytes, e.g. "\x1b[A")
  → ws.send(JSON {t:'i', d})
- → server term.write(d)  (into the attach pty master)
+ → server os.write(pty fd, d)  (into the attach pty master)
  → tmux client stdin
  → tmux server routes it to the pane
  → claude stdin
@@ -145,7 +149,7 @@ tmux key bindings (`Ctrl+B` etc.) flow the same way, so tmux itself is usable fr
 browser window resized
  → ResizeObserver → fit.fit() → new cols/rows
  → term.onResize → ws.send({t:'r', c, r})
- → server term.resize(c, r)  (changes the pty window size)
+ → server proc.setwinsize(r, c)  (changes the pty window size)
  → tmux client gets SIGWINCH and tells the server its new size
  → with window-size latest, the window follows the most recently active client
  → pane pty is resized too → claude gets SIGWINCH and redraws
@@ -153,8 +157,8 @@ browser window resized
 
 ### 6. Disconnecting
 
-- Closing the tab / clicking another session → WebSocket closes → server `term.kill()` (`src/server.ts:123`) → tmux client exits = **detach**. The tmux server and claude keep running.
-- If tmux goes away first (session killed, etc.) → `onExit` → WebSocket closes (`:110`) → the browser shows "disconnected".
+- Closing the tab / clicking another session → WebSocket closes → server `proc.terminate()` (`terminal.py:69`) → tmux client exits = **detach**. The tmux server and claude keep running.
+- If tmux goes away first (session killed, etc.) → pty read hits EOF → WebSocket closes (`terminal.py:42`) → the browser shows "disconnected".
 
 ## Common questions
 
@@ -162,7 +166,7 @@ browser window resized
 Output is high-volume and needs no interpretation, so it's sent raw. Input has two kinds of messages (keystrokes and resize), so JSON distinguishes them.
 
 **What if a multi-byte character (e.g. Korean) gets split?**
-In utf8 mode node-pty uses a streaming decoder, so it never hands over a string cut mid-character. The server re-encodes to utf8 bytes and xterm.js decodes them.
+The server doesn't decode what it reads from the pty; it forwards raw bytes. If a character is split across chunks, xterm.js's UTF-8 decoder joins it with the next chunk.
 
 **What happens with several browsers attached at once?**
 Each connection gets its own tmux client. They all show the same session, and anyone's typing goes to the same claude. With `window-size latest`, the window size follows whoever typed or resized last.

@@ -9,19 +9,19 @@ Groundwork before Cardinal proper. One Claude Code session = one tmux session, d
 ```
  human (terminal)      browser / external         another claude session (master)
       │                      │                              │
-  cardinal CLI       cardinal serve (HTTP/WS)      cardinal CLI (via Bash tool)
+  cardinal CLI      cardinal-server (Python)      cardinal CLI (via Bash tool)
       └──────────┬───────────┴──────────────────────────────┘
                  ▼
           src/session.ts   ← shared create / query / control logic
             │         │
-      tmux commands   ~/.cardinal/sessions/<name>/
-            │         ▲   meta.json · state.json · events.jsonl
-            ▼         │
+      tmux commands   ~/.cardinal/sessions/<name>/meta.json   (name ↔ instanceId)
+            │         ~/.cardinal/hooks/<instanceId>/        (state.json · events.jsonl)
+            ▼         ▲
    tmux session cardinal-<name>
-     └─ claude (--session-id, --settings hooks) ── hooks → dist/hook.js ─┘
+     └─ claude (--session-id, --settings hooks) ── hooks → dist/hook.js <hook dir> ─┘
 ```
 
-The CLI talks to tmux and the state files directly; no server needed. The server just exposes the same logic over HTTP/WS.
+The CLI talks to tmux and the state files directly; no server needed. The server (`server/`, Python) calls the CLI and collects the files into a DB → [server.en.md](server.en.md).
 
 ## Files
 
@@ -33,9 +33,8 @@ The CLI talks to tmux and the state files directly; no server needed. The server
 | `src/hook.ts` | Claude Code hook. Turns hook events into session state |
 | `src/session.ts` | Create, status, send/keys/wait, report, kill |
 | `src/transcript.ts` | Parses the transcript (jsonl) into turns |
-| `src/server.ts` | HTTP REST + WebSockets (terminal, state events) |
+| `src/reply.ts` | `cardinal reply` (reply to a channel event via the server) |
 | `src/cli.ts` | The `cardinal` command |
-| `public/index.html` | Web terminal (xterm.js) |
 | `bin/cardinal` | CLI wrapper script |
 
 ## Creating a session
@@ -43,17 +42,24 @@ The CLI talks to tmux and the state files directly; no server needed. The server
 `cardinal new <name>` does roughly this:
 
 0. The working directory is always fixed: `$CARDINAL_WORKSPACE` (default `~/.cardinal/workspace`). Created if missing, used by its realpath.
-1. Validate the name (`[A-Za-z0-9][A-Za-z0-9_-]{0,47}`); fail if the tmux session already exists.
-2. Generate a UUID and use it as the claude session ID, so Cardinal knows the ID up front.
-3. Remove any leftover record dir for that name, write `meta.json` and `state.json (starting)`.
+1. Validate the name (`[A-Za-z0-9][A-Za-z0-9_-]{0,47}`).
+   Every later step runs inside a **per-name create lock** (`sessions/.create-<name>.lock`, waits up to 30s), so creations of the same name go one at a time.
+   - Inside the lock, check the current session list: a live session with that name → `이미 있는 세션: <name> (<state>)`; a tmux session of that name without Cardinal records → `이미 있는 tmux 세션`. A name with only a dead session's records is re-created.
+   - The lock is released after tmux is up, so a waiting request for the same name sees the first session in the list and is rejected.
+   - Without the lock, two concurrent requests both passed the check and `meta.json` could be left pointing at the instance whose tmux launch failed (session stuck at `starting` forever).
+2. Mint two UUIDs: the **instanceId** (session identity, also the hook dir name) and the initial claude session ID (passed as `--session-id`).
+3. Remove leftover records for that name (the name dir and the hook dir it pointed to),
+   create `hooks/<instanceId>/` with `state.json (starting)`, and write `sessions/<name>/meta.json` last.
 4. Launch tmux:
    ```
    tmux new-session -d -s cardinal-<name> -c <workspace> -x 200 -y 50 \
-     -e CARDINAL_SESSION=<name> -e CARDINAL_ROLE=<role> -e CARDINAL_HOME=... -e PATH=<repo>/bin:$PATH \
+     -e CARDINAL_SESSION=<name> -e CARDINAL_INSTANCE=<instanceId> -e CARDINAL_ROLE=<role> -e CARDINAL_HOME=... -e PATH=<repo>/bin:$PATH \
      -- claude --session-id <uuid> --name <name> --settings '<hooks JSON>' \
                --append-system-prompt '<role prompt>' [claude args...] [initial prompt]
    ```
 5. Set `window-size latest` so the most recently active client decides the window size.
+
+If the tmux launch in step 4 fails, the `meta.json` and hook dir from step 3 are removed and it ends with `tmux 세션 생성 실패: <tmux error>` (no record left pointing at an instance that never started).
 
 When claude exits, the tmux session goes away with it.
 
@@ -68,9 +74,27 @@ As a bonus, the trust dialog only has to be accepted once for that folder.
 
 Hooks are injected via `--settings`, so the user's settings files are untouched (they merge with existing hooks). Registered events:
 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`.
-Command is `node <repo>/dist/hook.js`, 10s timeout.
+Command is `node <repo>/dist/hook.js <hook dir>`, 10s timeout. **The hook dir path is baked into the command as an argument.**
 
-The hook does nothing without `CARDINAL_SESSION`. It **never writes to stdout** (SessionStart/UserPromptSubmit output gets injected into claude's context) and always exits 0, even on error.
+The hook **never writes to stdout** (SessionStart/UserPromptSubmit output gets injected into claude's context) and always exits 0, even on error.
+
+### Session identity and hook dirs
+
+Every session (= one claude process) has **its own hook dir**. The hook writes only there and doesn't know the session name.
+
+```
+~/.cardinal/
+  sessions/<name>/meta.json         written by Cardinal only; the only place name → instanceId is linked
+  hooks/<instanceId>/state.json     written only by that instance's hooks
+  hooks/<instanceId>/events.jsonl
+```
+
+- **The hook dir is baked into the hook command at launch.** The hook never locates its dir by env var or name; that claude process uses that dir for its whole life.
+- **Name reuse**: `new` right after `kill` with the same name gets a new instanceId → new dir. The old process's late `SessionEnd` goes to its old dir, which `new` already removed, so nothing is written. Previously this overwrote the new session's state with `ended`.
+- **`/clear`**: the claude session ID changes, but it's the same process, so the same hook dir. The hook records each `session_id` it receives as `claudeSessionId` in `state.json`, and transcripts are looked up by the latest ID. `meta.json`'s `claudeSessionId` keeps the initial value (`status` shows the current one as `currentClaudeSessionId`).
+- **Late hooks after purge**: neither the hook nor the store creates directories. If the dir is gone, the hook just exits. Previously a dir without meta was resurrected.
+- The server DB also keys sessions by instanceId (`sessions.id`); the current claude session ID is the `claude_session_id` column.
+- Sessions created the old way (no `instanceId` in meta) share the name dir. A hook called without an argument falls back to the old dir via `CARDINAL_SESSION`.
 
 ### Role prompts
 
@@ -97,23 +121,31 @@ If tmux is dead but no hook fired, status queries report `ended` anyway.
 
 ### Record files
 
-`~/.cardinal/sessions/<name>/`
+- `sessions/<name>/meta.json`: written once on create (name, **instanceId**, tmux name, role, cwd, initial claude session ID, claude args, created time)
+- `hooks/<instanceId>/state.json`: overwritten by hooks (state, time, event, detail, last tool, transcript path, current claude session ID)
+- `hooks/<instanceId>/events.jsonl`: every hook event appended as a line (prompts clipped to 2000 chars, tool input to 300, includes `prompt_id` and the claude session ID)
 
-- `meta.json`: written once on create (name, tmux name, role, cwd, claude session ID, claude args, created time)
-- `state.json`: overwritten by hooks (state, time, event, detail, last tool, transcript path)
-- `events.jsonl`: every hook event appended as a line (prompts clipped to 2000 chars, tool input to 300, includes `prompt_id`)
-
-Meta and state are split because different writers own them (Cardinal vs hooks), so they never clobber each other. Writes go to a tmp file and are renamed into place.
+Meta and hook files have different writers (Cardinal vs hooks), so they live in separate directories. Writes go to a tmp file and are renamed into place.
 
 ## Control
 
 ### send
 
-1. Refuse if the target is `waiting` (the text would land in the dialog). `--force` overrides.
-2. `tmux set-buffer` → `paste-buffer -p` (bracketed paste). Plain `send-keys` would submit at every newline.
-3. Sleep 200ms, then `Enter`; sending it immediately sometimes gets swallowed by the TUI. `--no-enter` pastes only.
+All `send`s into the same session **line up one at a time** (multiple CLIs, the server and master sessions alike). See `send` in `src/session.ts`; the lock is `src/lock.ts`.
 
-Sending while `busy` is fine; claude queues the message.
+1. **Take the session lock**: `send.lock` in the hook dir. If another `send` is between paste and Enter, wait.
+   - The lock file holds a pid. If that process is dead, the lock is cleared and we proceed.
+   - The pid is written to a tmp file first and the lock is created with `link`, so an empty lock file is never visible.
+2. **Wait for idle**: if the session is `busy`/`starting`, wait until idle (default max 600s, `--queue-timeout`).
+   - Why: a message sent while busy doesn't queue; it **gets injected into the running turn**. Measured: 2 messages sent while busy → 3 `UserPromptSubmit`s, 1 `Stop`. Then one message ≠ one turn, and `--wait`/`auto_reply` pick up someone else's answer.
+   - `--now`: don't wait, inject immediately (when you mean to).
+3. Refuse if the target is `waiting` (the text would land in the dialog). `--force` overrides.
+4. Remember the transcript's turn count right before sending (= where this message's turn will be).
+5. `tmux set-buffer` → `paste-buffer -p` (bracketed paste). Plain `send-keys` would submit at every newline.
+6. Sleep 200ms, then `Enter`; sending it immediately sometimes gets swallowed by the TUI. `--no-enter` pastes only (and releases the lock right away).
+7. **Confirm receipt**: release the lock once the hook state changes after the send time (max 10s, polled every 50ms). If not seen, just warn (`accepted: false`).
+
+Concurrent `send`s go in the order they acquire the lock.
 
 ### keys
 
@@ -123,6 +155,7 @@ Straight `tmux send-keys`. For the trust dialog (`Down Enter`), permission choic
 
 Polls the state file every 0.5s. By default returns on `idle`/`waiting`/`ended`.
 `send --wait` only accepts states recorded after the send time, so it doesn't mistake the pre-send `idle` for completion.
+When done it prints the reply of **the turn at the position remembered in step 4** (= its own turn), not the last turn, so a `send` that starts the next turn right after can't steal it. If the transcript changed (e.g. `/clear`), it falls back to the last turn.
 `new --prompt --wait` waits for an `idle` whose event is `Stop` (skips the SessionStart idle).
 
 ### report
@@ -159,7 +192,7 @@ assistant  text          ← final answer (stop_reason: end_turn)
 - `complete` if the last `assistant` line has `stop_reason: end_turn`
 
 Reporting mid-turn gives the partial reply so far, marked as still in progress. Transcripts outlive the session, so dead sessions can be reported too.
-`last` prints just the text from the same parse, and so does `send --wait`.
+`last` prints just the last turn's text from the same parse. `send --wait` uses the same parser to pick its own turn.
 
 ## CLI
 
@@ -175,45 +208,19 @@ cardinal report <name> [--tools] [--json]
 cardinal last <name>
 cardinal attach <name>
 cardinal kill <name> [--purge]
-cardinal serve [--host H] [--port P]
+cardinal reply <event id> <text|-> [--file path]...
 ```
+
+`new`/`send`/`kill` print JSON with `--json` (the server uses this).
 
 ## Server
 
-`cardinal serve` → default `127.0.0.1:7878`. Env: `CARDINAL_HOST`, `CARDINAL_PORT`, `CARDINAL_TOKEN`.
-With a token set, every HTTP/WS request needs `?token=` or `Authorization: Bearer`.
-
-### Terminal WebSocket `/ws/term/<name>?cols=&rows=[&readonly=1]`
-
-Each connection spawns its own `tmux attach-session -t =cardinal-<name>` through node-pty.
-
-- client → server (text JSON): `{"t":"i","d":"input"}`, `{"t":"r","c":cols,"r":rows}`
-- server → client (binary): raw terminal output
-- `readonly=1`: attaches with `-r -f ignore-size`. Input ignored, doesn't affect window size (spectator mode)
-- Closing the socket kills the pty (tmux just detaches; the session keeps running). If tmux detaches, the socket closes.
-
-### State WebSocket `/ws/events`
-
-Sends the full list on connect, then pushes `{"type":"sessions","sessions":[...]}` whenever it changes, driven by `fs.watch` on `~/.cardinal/sessions` (150ms debounce) plus a 3s periodic check. Identical payloads are skipped.
-
-### REST
-
-| Method | Path | Notes |
-| --- | --- | --- |
-| GET | `/api/sessions` | list |
-| POST | `/api/sessions` | create `{name, role, prompt, args}` |
-| GET | `/api/sessions/<name>` | status |
-| DELETE | `/api/sessions/<name>[?purge=1]` | kill |
-| POST | `/api/sessions/<name>/send` | `{text, submit, force, wait, timeoutMs}`; with wait returns `{status, last}` |
-| POST | `/api/sessions/<name>/keys` | `{keys: [...]}` |
-| GET | `/api/sessions/<name>/screen?lines=` | screen |
-| GET | `/api/sessions/<name>/last` | last turn's reply text |
-| GET | `/api/sessions/<name>/report` | `{status, phase, transcript, turn}` |
+HTTP/WebSocket, the DB and the message channel moved to a Python service → [server.en.md](server.en.md).
 
 ## Tested
 
 - Worker create → file-writing task → reply via `send --wait`. Events `SessionStart → UserPromptSubmit → PreToolUse(Bash) → PostToolUse → Stop` recorded.
-- Terminal WebSocket input/output/resize, state event push, 401 without token, multi-line message via REST.
+- Multi-line messages (bracketed paste).
 - A master spawning a worker on its own → getting the answer → killing it.
 - `report`: `working` + partial reply mid-turn, `done` + full reply (interim updates included) after, `dead` + history after kill. A master used `report` to fetch a worker's full reply.
 - Computed transcript path matches the one reported by hooks.
@@ -223,7 +230,17 @@ Sends the full list on connect, then pushes `{"type":"sessions","sessions":[...]
 - The first use of the workspace stops at `starting` on the trust dialog → `cardinal keys <name> Down Enter` once. It won't appear again.
 - `waiting` hasn't been observed for real (test sessions ran in auto mode, so no permission prompts).
 - The stray `PreToolUse` after `Stop` is now ignored, but its source is still unknown. Trace it via `promptId` in `events.jsonl`.
-- A message queued while `busy` can make `send --wait` return on the previous turn's `Stop`.
-- `cardinal kill` kills tmux right away, so `SessionEnd` may not fire → Cardinal writes `ended` itself.
-- Web page only checked as served HTML; not tested in a browser yet.
-- node-pty prebuilds ship `spawn-helper` without the exec bit, so `postinstall` chmods it.
+- `cardinal kill` only kills tmux and returns immediately; the `SessionEnd` hook (reason `other`) fires later. Cardinal also writes `ended` itself.
+
+Confirmed by the concurrency / hook analysis (actually reproduced):
+
+- **Concurrent hooks in the same session overwrite `state.json`.** With parallel tool calls the hook processes start in the same millisecond (3 simultaneous `PreToolUse` observed). Which of two near-simultaneous hooks wins is not determined, so a session waiting for approval can show `busy` (mechanism reproduced; not observed with a real approval prompt).
+- **Esc interrupt leaves the state at `busy`.** No `Stop` hook fires. `wait` blocks until timeout until the next input. Since `send` now waits for idle, it **blocks up to 600s** too → use `send --now`; that input brings the state back.
+- **About 50ms of `ended` right after `/clear`**, because `SessionEnd(clear)` arrives before `SessionStart(clear)`.
+- **claude starts turns by itself when a background task finishes** (`<task-notification>` input). The session turns `busy` with nobody sending, and the "last turn" for `report`/`last`/`auto_reply` can be the answer to that notification.
+- **The transcript parser treats non-human lines as turn starts** (`/clear`, `/compact` command lines, compaction summaries, `<task-notification>`). They can be told apart by `origin.kind` (`human` / `task-notification`) in the transcript.
+- Inferred (unverified): auto-compaction mid-turn would show `idle` until the turn ends because of `SessionStart(compact)`. Notification types like `auth_success` would be wrongly recorded as `waiting`.
+
+Fixed:
+- Old-session hooks corrupting a re-created name, reading the old transcript after `/clear`, dirs resurrected after purge → per-session hook dirs ([Session identity and hook dirs](#session-identity-and-hook-dirs)).
+- Concurrent `send`s merging into one input (always merged like `firstsecond` within 0.2s), messages sent while busy being injected into the running turn → session lock + idle wait ([send](#send)). With real claude, two events 0.1s apart now become two separate turns and each auto reply is correct.

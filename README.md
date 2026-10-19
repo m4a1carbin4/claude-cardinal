@@ -55,6 +55,7 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 자세한 건:
 - [세션 시스템](docs/session-system.md) ([English](docs/session-system.en.md))
 - [웹 터미널은 어떻게 도는가](docs/web-terminal.md) ([English](docs/web-terminal.en.md))
+- [카디널 서버: DB, 메시지 채널](docs/server.md) ([English](docs/server.en.md))
 
 ## 할 일
 
@@ -62,12 +63,18 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [x] 세션 목록 / ID / 히스토리 관리
 - [x] 워커 / 마스터 구분
 - [x] 마스터가 세션 띄워서 일 넘기기
-- [ ] 이벤트 채널 + 외부 메시지 서버 연동
-- [ ] 세션별 이벤트 수신 옵션
+- [x] 서버 분리 (Python FastAPI) + 세션 기록 SQLite
+- [x] 이벤트 채널 (디스코드 봇 + local) + 세션별 라우트 (채널명, 트리거)
+- [x] 세션 안 에이전트가 이벤트에 직접 답장 (`cardinal reply`, 파일 첨부)
+- [x] 세션별 훅 폴더 (고유 키 기준) → 이름 재사용 / `/clear` / purge 꼬임 해결
+- [x] 세션별 `send` 직렬화 (세션 락 + idle 대기 → 메시지 하나 = 턴 하나)
+- [ ] 상태 판정 보강 (Esc 중단, 백그라운드 알림 턴, 사람 입력만 턴으로 보기)
+- [ ] 디스코드 실제 봇으로 돌려보기
+- [ ] 카디널 캐릭터성
 
 ## 실행 방법
 
-필요한 거: tmux, node 22+, pnpm, claude
+필요한 거: tmux, node 22+, pnpm, claude, (서버) python 3.12+ / uv
 
 ```sh
 pnpm install && pnpm build
@@ -96,23 +103,25 @@ cardinal kill w1 --purge
 그래서 트랜스크립트 경로가 세션 ID만으로 정해짐.
 
 상태는 Claude Code 훅으로 찍음: `starting → idle ⇄ busy`, 승인 기다리면 `waiting`, 꺼지면 `ended`.
-기록은 `~/.cardinal/sessions/<이름>/` 에 (`meta.json`, `state.json`, `events.jsonl`).
+기록: `~/.cardinal/sessions/<이름>/meta.json` (이름 ↔ 세션 고유 키) + `~/.cardinal/hooks/<고유 키>/` (훅 전용 폴더: `state.json`, `events.jsonl`).
 
 작업 폴더 처음 쓸 땐 신뢰 다이얼로그가 떠서 `starting`에 멈춤 → `cardinal keys <이름> Down Enter` 한 번이면 이후론 안 뜸.
 
-### 웹
+### 서버 (웹, DB, 메시지 채널)
 
 ```sh
-cardinal serve                         # http://127.0.0.1:7878
-CARDINAL_TOKEN=xxx cardinal serve      # 토큰 걸기 (?token=xxx 또는 Bearer)
+cd server && uv sync
+uv run cardinal-server                     # http://127.0.0.1:7878
+DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 봇도 같이
+CARDINAL_TOKEN=xxx uv run cardinal-server  # 토큰 걸기 (?token=xxx 또는 Bearer)
 ```
 
-- `GET  /` 웹 터미널 (세션 목록 + xterm.js)
-- `WS   /ws/term/<이름>?cols=&rows=[&readonly=1]` 터미널 I/O
-  - 보내기: `{"t":"i","d":"입력"}`, `{"t":"r","c":120,"r":40}` (리사이즈)
-  - 받기: 바이너리 프레임 = 터미널 출력 그대로
-- `WS   /ws/events` 상태 바뀔 때마다 `{"type":"sessions","sessions":[...]}`
-- `GET/POST /api/sessions`, `GET/DELETE /api/sessions/<이름>`
-- `POST /api/sessions/<이름>/send` `{"text","wait","timeoutMs","submit","force"}`
-- `POST /api/sessions/<이름>/keys` `{"keys":["Enter"]}`
-- `GET  /api/sessions/<이름>/screen?lines=`, `GET /api/sessions/<이름>/last`, `GET /api/sessions/<이름>/report`
+- 웹 터미널, 세션 생성할 때 채널 라우트 (채널명 + 트리거) 붙이기
+- 세션 기록은 `~/.cardinal/cardinal.db` (SQLite)에 쌓임. purge해도 DB엔 남음
+- 라우트에 맞는 디스코드 메시지 → 세션에 전달 → 세션 안 에이전트가 답장:
+
+```sh
+cardinal reply evt_71363e3e "답장" --file result.png
+```
+
+API랑 채널 자세한 건 [docs/server.md](docs/server.md).

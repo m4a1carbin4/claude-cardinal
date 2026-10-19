@@ -8,25 +8,13 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "dev": "tsc -p . --watch",
-    "serve": "node dist/cli.js serve",
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
+    "dev": "tsc -p . --watch"
   },
   "engines": {
     "node": ">=22"
   },
-  "dependencies": {
-    "node-pty": "^1.1.0",
-    "ws": "^8.21.3"
-  },
   "devDependencies": {
     "@types/node": "^26.6.2",
-    "@types/ws": "^8.18.1",
     "typescript": "^7.0.2"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "node-pty"
-    ]
   }
 }

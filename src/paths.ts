@@ -13,6 +13,11 @@ export const SESSIONS_DIR = path.join(CARDINAL_HOME, 'sessions');
 export const TMUX_PREFIX = 'cardinal-';
 
 export const sessionDir = (name: string) => path.join(SESSIONS_DIR, name);
+
+// 세션 인스턴스마다 훅 전용 폴더 하나. 훅은 여기만 씀 (세션 이름은 모름).
+// 이름 ↔ 인스턴스 연결은 sessions/<이름>/meta.json 의 instanceId 로만 함.
+export const HOOKS_DIR = path.join(CARDINAL_HOME, 'hooks');
+export const hookDir = (instanceId: string) => path.join(HOOKS_DIR, instanceId);
 export const tmuxName = (name: string) => TMUX_PREFIX + name;
 
 // 모든 세션이 도는 고정 작업 폴더. 한 곳으로 고정하면 트랜스크립트 경로가 세션 ID만으로 정해지고,

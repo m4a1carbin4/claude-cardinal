@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { SESSIONS_DIR, sessionDir } from './paths.js';
+import { SESSIONS_DIR, hookDir, sessionDir } from './paths.js';
 
 export type Role = 'worker' | 'master';
 
@@ -11,13 +11,14 @@ export type Role = 'worker' | 'master';
 // ended:    claude 종료
 export type SessionState = 'starting' | 'idle' | 'busy' | 'waiting' | 'ended';
 
-// 만들 때 한 번 쓰고 끝 (카디널 쪽 소유)
+// 만들 때 한 번 쓰고 끝 (카디널 쪽 소유). 이름 ↔ 인스턴스를 잇는 유일한 곳
 export interface SessionMeta {
   name: string;
+  instanceId?: string; // 세션 고유 키 = 훅 폴더 이름. 없으면 예전 방식 세션
   tmux: string;
   role: Role;
   cwd: string;
-  claudeSessionId: string;
+  claudeSessionId: string; // 처음 띄울 때 지정한 ID. /clear 하면 claude 쪽 ID는 바뀜 (state 쪽 참고)
   claudeArgs: string[];
   createdAt: string;
 }
@@ -30,12 +31,15 @@ export interface SessionStateFile {
   detail?: string;
   tool?: string;
   transcriptPath?: string;
+  claudeSessionId?: string; // 훅이 마지막으로 받은 claude 세션 ID
 }
 
-// meta랑 state 파일을 나눈 건 쓰는 주체가 달라서 서로 덮어쓰는 일 없게 하려고
 const metaPath = (name: string) => path.join(sessionDir(name), 'meta.json');
-const statePath = (name: string) => path.join(sessionDir(name), 'state.json');
-export const eventsPath = (name: string) => path.join(sessionDir(name), 'events.jsonl');
+
+// 훅 폴더. 예전 방식 세션(instanceId 없음)은 세션 폴더를 같이 썼음
+export const stateDir = (meta: SessionMeta) => (meta.instanceId ? hookDir(meta.instanceId) : sessionDir(meta.name));
+const statePath = (dir: string) => path.join(dir, 'state.json');
+export const eventsPath = (dir: string) => path.join(dir, 'events.jsonl');
 
 function readJson<T>(file: string): T | undefined {
   try {
@@ -45,22 +49,25 @@ function readJson<T>(file: string): T | undefined {
   }
 }
 
-// 반쯤 쓴 파일을 누가 읽지 않게 tmp에 쓰고 rename
+// 반쯤 쓴 파일을 누가 읽지 않게 tmp에 쓰고 rename.
+// 폴더는 안 만듦: 훅 폴더가 지워진 뒤(purge) 늦게 온 훅이 폴더를 되살리지 않게
 function writeJson(file: string, data: unknown): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
   fs.renameSync(tmp, file);
 }
 
 export const readMeta = (name: string) => readJson<SessionMeta>(metaPath(name));
-export const writeMeta = (meta: SessionMeta) => writeJson(metaPath(meta.name), meta);
-export const readState = (name: string) => readJson<SessionStateFile>(statePath(name));
-export const writeState = (name: string, s: SessionStateFile) => writeJson(statePath(name), s);
+export function writeMeta(meta: SessionMeta): void {
+  fs.mkdirSync(sessionDir(meta.name), { recursive: true });
+  writeJson(metaPath(meta.name), meta);
+}
 
-export function appendEvent(name: string, event: Record<string, unknown>): void {
-  fs.mkdirSync(sessionDir(name), { recursive: true });
-  fs.appendFileSync(eventsPath(name), JSON.stringify(event) + '\n');
+export const readState = (dir: string) => readJson<SessionStateFile>(statePath(dir));
+export const writeState = (dir: string, s: SessionStateFile) => writeJson(statePath(dir), s);
+
+export function appendEvent(dir: string, event: Record<string, unknown>): void {
+  fs.appendFileSync(eventsPath(dir), JSON.stringify(event) + '\n');
 }
 
 export function listNames(): string[] {
@@ -74,6 +81,9 @@ export function listNames(): string[] {
   }
 }
 
-export function removeSessionDir(name: string): void {
+// 이름 폴더 + 그 이름이 가리키던 훅 폴더까지 같이 지움
+export function removeSession(name: string): void {
+  const meta = readMeta(name);
+  if (meta?.instanceId) fs.rmSync(hookDir(meta.instanceId), { recursive: true, force: true });
   fs.rmSync(sessionDir(name), { recursive: true, force: true });
 }

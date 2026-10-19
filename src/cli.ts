@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
+import { reply } from './reply.js';
 import * as session from './session.js';
 import type { SessionStatus } from './session.js';
 
@@ -8,8 +9,10 @@ const HELP = `cardinal — tmux + Claude Code 세션 제어
   cardinal new <name> [--role worker|master] [--prompt TEXT] [--wait] [-- <claude 인자...>]
   cardinal ls [--json]                       세션 목록 + 상태
   cardinal status <name> [--json]            한 세션 상태
-  cardinal send <name> <text|-> [--wait] [--timeout SEC] [--no-enter] [--force]
-                                             메시지 보내기 ('-' 면 stdin), --wait 면 끝날 때까지 기다리고 마지막 응답 출력
+  cardinal send <name> <text|-> [--wait] [--timeout SEC] [--now] [--queue-timeout SEC] [--no-enter] [--force]
+                                             메시지 보내기 ('-' 면 stdin), --wait 면 그 턴이 끝날 때까지 기다리고 그 턴의 응답 출력
+                                             같은 세션 send 는 한 줄로 섬. 작업 중이면 idle 될 때까지 기다렸다가 보냄
+                                             (--now: 안 기다리고 진행 중인 턴에 끼워넣기, --queue-timeout: 대기 한도, 기본 600초)
   cardinal keys <name> <key...>              tmux 키 그대로 전송 (예: Enter, Escape, C-c, 1)
   cardinal wait <name> [--timeout SEC]       idle/waiting/ended 될 때까지 대기
   cardinal screen <name> [--lines N]         현재 화면 (N 주면 스크롤백 포함)
@@ -17,7 +20,11 @@ const HELP = `cardinal — tmux + Claude Code 세션 제어
   cardinal last <name>                       마지막 턴 응답 텍스트만
   cardinal attach <name>                     tmux에 직접 붙기
   cardinal kill <name> [--purge]             세션 종료 (--purge 면 기록도 삭제)
-  cardinal serve [--host H] [--port P]       웹소켓/웹 서버 (CARDINAL_TOKEN 있으면 토큰 인증)
+  cardinal reply <event-id> <text|-> [--file PATH]...
+                                             외부 채널 이벤트에 답장 (카디널 서버 필요). 파일은 최대 10개, 각 10MB
+
+new/send/kill 은 --json 주면 결과를 JSON으로 출력.
+서버(웹소켓, 디스코드 채널, DB)는 server/ 의 Python 서비스로 분리됨.
 
 상태: starting → idle ⇄ busy, waiting(승인 대기), ended
 세션은 전부 고정 작업 폴더에서 돔: $CARDINAL_WORKSPACE (기본 ~/.cardinal/workspace)
@@ -106,12 +113,13 @@ async function main() {
       wait: { type: 'boolean' },
       timeout: { type: 'string' },
       'no-enter': { type: 'boolean' },
+      now: { type: 'boolean' },
+      'queue-timeout': { type: 'string' },
       force: { type: 'boolean' },
       json: { type: 'boolean' },
       lines: { type: 'string' },
       purge: { type: 'boolean' },
-      host: { type: 'string' },
-      port: { type: 'string' },
+      file: { type: 'string', multiple: true },
     },
   });
   const timeoutMs = o.timeout ? Number(o.timeout) * 1000 : undefined;
@@ -128,8 +136,9 @@ async function main() {
           timeoutMs: timeoutMs ?? (o.prompt ? undefined : 60_000),
           accept: (s) => !o.prompt || s.state !== 'idle' || s.event === 'Stop',
         });
-        printStatus(st);
-      } else console.log(`created ${meta.name} (tmux: ${meta.tmux}, claude: ${meta.claudeSessionId})`);
+        o.json ? console.log(JSON.stringify(st, null, 2)) : printStatus(st);
+      } else if (o.json) console.log(JSON.stringify(await session.getStatus(meta.name), null, 2));
+      else console.log(`created ${meta.name} (tmux: ${meta.tmux}, claude: ${meta.claudeSessionId})`);
       break;
     }
     case 'ls': {
@@ -146,12 +155,22 @@ async function main() {
       const name = need();
       const text = p[1] === '-' ? await readStdin() : p.slice(1).join(' ');
       if (!text) fail('보낼 텍스트 필요');
-      const sentAt = await session.send(name, text, { submit: !o['no-enter'], force: o.force });
+      const res = await session.send(name, text, {
+        submit: !o['no-enter'],
+        force: o.force,
+        now: o.now,
+        queueTimeoutMs: o['queue-timeout'] ? Number(o['queue-timeout']) * 1000 : undefined,
+      });
+      if (!res.accepted && !o['no-enter']) console.error(`[${name}] 보냈지만 claude가 받았다는 신호를 못 봄 (10초)`);
       if (o.wait) {
-        const st = await session.wait(name, { since: sentAt, timeoutMs });
-        if (st.state === 'waiting') console.error(`[${name}] 승인 대기 중: ${st.detail ?? ''}`);
-        console.log(session.lastReply(name) ?? '');
-      }
+        const st = await session.wait(name, { since: res.sentAt, timeoutMs });
+        const last = session.turnText(session.turnOf(name, res));
+        if (o.json) console.log(JSON.stringify({ sentAt: res.sentAt, accepted: res.accepted, status: st, last: last ?? null }, null, 2));
+        else {
+          if (st.state === 'waiting') console.error(`[${name}] 승인 대기 중: ${st.detail ?? ''}`);
+          console.log(last ?? '');
+        }
+      } else if (o.json) console.log(JSON.stringify({ sentAt: res.sentAt, accepted: res.accepted }));
       break;
     }
     case 'keys':
@@ -180,14 +199,13 @@ async function main() {
     }
     case 'kill':
       await session.kill(need(), o.purge);
+      if (o.json) console.log(JSON.stringify({ ok: true }));
       break;
-    case 'serve': {
-      const { serve } = await import('./server.js');
-      serve({
-        host: o.host ?? process.env.CARDINAL_HOST ?? '127.0.0.1',
-        port: Number(o.port ?? process.env.CARDINAL_PORT ?? 7878),
-        token: process.env.CARDINAL_TOKEN,
-      });
+    case 'reply': {
+      const eventId = need('<event-id>');
+      const text = p[1] === '-' ? await readStdin() : p.slice(1).join(' ');
+      const r = await reply(eventId, text, o.file ?? []);
+      console.log(o.json ? JSON.stringify(r, null, 2) : `sent reply to ${eventId}`);
       break;
     }
     case undefined:
