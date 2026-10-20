@@ -16,8 +16,17 @@ log = logging.getLogger("cardinal.router")
 
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 AUTO_REPLY_TIMEOUT_S = 900
-# 메시지 넣어도 되는 상태. starting(신뢰 다이얼로그 등)/waiting(승인 대기)에 넣으면 다이얼로그에 들어가버림
-DELIVERABLE_STATES = {"idle", "busy"}
+# 전달을 시작해도 되는 상태. busy/starting 은 CLI 가 idle 될 때까지 기다렸다가 넣음 (최대 600초).
+# waiting(승인 대기)은 CLI 가 거부하니까 바로 실패 처리
+DELIVERABLE_STATES = {"idle", "busy", "starting"}
+
+# 외부에서 온 글자 중 탭/줄바꿈 빼고 제어 문자는 지움.
+# tmux 는 붙여넣기 내용을 거르지 않아서 ESC[201~ 같은 게 그대로 감 (Claude Code 가 걸러주긴 하지만 방어용)
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def clean(s: str | None) -> str | None:
+    return _CTRL.sub("", s) if s else s
 
 
 def match_route(route: dict, msg: InboundMessage) -> tuple[bool, str]:
@@ -53,11 +62,12 @@ def _safe_name(name: str) -> str:
 
 
 def format_delivery(ev: dict, route: dict, body: str, cli_path: Path) -> str:
-    where = f"{ev['platform']} #{ev.get('channel_name') or ev.get('channel_id') or '?'}"
+    where = f"{ev['platform']} #{clean(ev.get('channel_name') or ev.get('channel_id')) or '?'}"
     if ev.get("guild"):
-        where += f" ({ev['guild']})"
+        where += f" ({clean(ev['guild'])})"
+    body = clean(body) or ""
     lines = [
-        f"[cardinal:event {ev['id']}] {where} · {ev.get('author') or '?'}",
+        f"[cardinal:event {ev['id']}] {where} · {clean(ev.get('author')) or '?'}",
     ]
     if route.get("trigger") or route["match"] == "mention":
         lines.append(f"트리거: {route.get('trigger') or '@멘션'} ({route['match']})")
@@ -67,7 +77,7 @@ def format_delivery(ev: dict, route: dict, body: str, cli_path: Path) -> str:
         lines.append(f"첨부 {len(atts)}개:")
         for a in atts:
             info = ", ".join(x for x in (a.get("content_type"), f"{(a.get('size') or 0) // 1024}KB") if x)
-            lines.append(f"- {a.get('local_path') or a.get('url')} ({info})" + (f" 저장 실패: {a['error']}" if a.get("error") else ""))
+            lines.append(f"- {clean(a.get('local_path') or a.get('url'))} ({info})" + (f" 저장 실패: {a['error']}" if a.get("error") else ""))
     if route.get("auto_reply"):
         lines.append("이 이벤트는 턴이 끝나면 마지막 응답이 자동으로 답장됨. 따로 보내고 싶으면 아래 도구 사용.")
     lines.append(f"답장: {cli_path} reply {ev['id']} \"<답장>\" [--file <경로>]")
@@ -161,14 +171,17 @@ class Router:
         async with self._session_locks.setdefault(sid, asyncio.Lock()):
             try:
                 if route.get("auto_reply"):
-                    res = await self.cli.send(name, text, wait=True, timeout_s=AUTO_REPLY_TIMEOUT_S)
-                    if not (res or {}).get("accepted"):
+                    res = await self.cli.send(name, text, wait=True, timeout_s=AUTO_REPLY_TIMEOUT_S) or {}
+                    if not res.get("accepted"):
                         status, error = "failed", "claude가 받았다는 신호 없음"
+                    elif res.get("timedOut"):
+                        # 전달은 됐음. 턴이 안 끝나서 자동 답장만 못 함 (에이전트가 cardinal reply 로 직접 답할 수는 있음)
+                        error = f"턴이 {AUTO_REPLY_TIMEOUT_S}초 안에 안 끝나서 자동 답장 안 함"
                     self.db.finish_delivery(did, status, error)
                     # CLI 가 돌려주는 last 는 이 메시지가 만든 턴의 답 (다음 턴 아님)
-                    last = (res or {}).get("last")
-                    # 에이전트가 이미 cardinal reply 로 답했으면 자동 답장은 생략
-                    if status == "sent" and last and not self.db.has_reply(ev["id"], sid):
+                    last = res.get("last")
+                    # 누가 됐든 (이 세션, 마스터 등) 이미 이 이벤트에 답장했으면 자동 답장은 생략
+                    if status == "sent" and not res.get("timedOut") and last and not self.db.has_reply(ev["id"]):
                         await self.reply(ev["id"], name, last, [], source="auto")
                 else:
                     res = await self.cli.send(name, text)

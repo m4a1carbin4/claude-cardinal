@@ -118,6 +118,7 @@ CARDINAL_TOKEN=xxx uv run cardinal-server  # 토큰 걸기 (?token=xxx 또는 Be
 
 - 웹 터미널, 세션 생성할 때 채널 라우트 (채널명 + 트리거) 붙이기
 - 세션 기록은 `~/.cardinal/cardinal.db` (SQLite)에 쌓임. purge해도 DB엔 남음
+- 상태 확인: `GET /api/health` (디스코드 연결 상태 포함)
 - 라우트에 맞는 디스코드 메시지 → 세션에 전달 → 세션 안 에이전트가 답장:
 
 ```sh

@@ -26,12 +26,15 @@ class DiscordAdapter:
         intents.message_content = True
         self.client = discord.Client(intents=intents)
         self._task: asyncio.Task | None = None
+        # connecting → ready / failed: <사유> / closed. /api/health 로 보임
+        self.status = "connecting"
 
     async def start(self, callback: OnMessage) -> None:
         client = self.client
 
         @client.event
         async def on_ready():
+            self.status = "ready"
             log.info("디스코드 연결됨: %s", client.user)
 
         @client.event
@@ -58,8 +61,23 @@ class DiscordAdapter:
                 log.exception("메시지 처리 실패")
 
         self._task = asyncio.create_task(client.start(self.token))
+        self._task.add_done_callback(self._on_done)
+
+    def _on_done(self, task: asyncio.Task) -> None:
+        # client.start 가 끝났다 = 연결이 끊김. 잘못된 토큰이면 여기서 예외가 나는데,
+        # 콜백이 없으면 태스크 안에서 조용히 사라져서 서버는 멀쩡해 보이고 이벤트만 영영 안 옴
+        if task.cancelled():
+            self.status = "closed"
+            return
+        err = task.exception()
+        if err:
+            self.status = f"failed: {type(err).__name__}: {err}"
+            log.error("디스코드 연결 실패 → 디스코드 채널 꺼짐: %s: %s", type(err).__name__, err)
+        else:
+            self.status = "closed"
 
     async def stop(self) -> None:
+        self.status = "closed"
         await self.client.close()
         if self._task:
             self._task.cancel()

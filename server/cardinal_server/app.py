@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -32,6 +33,30 @@ from .router import Router
 log = logging.getLogger("cardinal")
 STATIC = Path(__file__).parent / "static"
 
+# 답장 API 서버 쪽 한도 (CLI 도 같은 값으로 미리 검사함, 디스코드 무부스트 서버 기준)
+MAX_REPLY_FILES = 10
+MAX_REPLY_FILE_BYTES = 10 * 1024 * 1024
+# /send 에 wait 만 주고 timeout_s 를 안 주면 이만큼만 기다림 (세션이 멈추면 요청이 영원히 안 끝나니까)
+DEFAULT_WAIT_TIMEOUT_S = 900
+# 구독자 하나에 보내는 데 이보다 오래 걸리면 끊음 (느린 클라이언트가 전달 흐름을 붙잡지 않게)
+PUBLISH_TIMEOUT_S = 2.0
+
+
+class _RedactToken(logging.Filter):
+    """uvicorn 접근 로그의 ?token=xxx 를 가림"""
+
+    pattern = re.compile(r"(token=)[^&\s\"']+")
+
+    def _sub(self, v):
+        return self.pattern.sub(r"\1***", v) if isinstance(v, str) else v
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # 접근 로그 포매터는 record.args 튜플을 풀어서 쓰니까 구조는 그대로 두고 값만 바꿈
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._sub(a) for a in record.args)
+        record.msg = self._sub(record.msg)
+        return True
+
 
 class Hub:
     """웹소켓 구독자들한테 JSON 뿌리기"""
@@ -39,13 +64,19 @@ class Hub:
     def __init__(self) -> None:
         self.clients: set[WebSocket] = set()
 
+    async def _send(self, ws: WebSocket, data: str) -> None:
+        try:
+            await asyncio.wait_for(ws.send_text(data), PUBLISH_TIMEOUT_S)
+        except Exception:
+            # 끊겼거나 너무 느림 → 구독 해제
+            self.clients.discard(ws)
+            with contextlib.suppress(Exception):
+                await ws.close()
+
     async def publish(self, msg: dict) -> None:
+        # 구독자별로 동시에, 각자 시간 제한. 하나가 느려도 나머지와 호출한 쪽(라우터)은 안 막힘
         data = json.dumps(msg, default=str)
-        for ws in list(self.clients):
-            try:
-                await ws.send_text(data)
-            except Exception:
-                self.clients.discard(ws)
+        await asyncio.gather(*(self._send(ws, data) for ws in list(self.clients)))
 
 
 # ---------- 요청 모델 ----------
@@ -97,11 +128,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     db = DB(settings.db_path)
     cli = Cli(settings)
     events_hub, channel_hub = Hub(), Hub()
+    # 만들고 참조를 안 들고 있으면 태스크가 끝나기 전에 GC 로 사라질 수 있음
+    bg_tasks: set[asyncio.Task] = set()
 
     def sessions_changed() -> None:
-        asyncio.get_running_loop().create_task(
+        t = asyncio.get_running_loop().create_task(
             events_hub.publish({"type": "sessions", "sessions": db.sessions()})
         )
+        bg_tasks.add(t)
+        t.add_done_callback(bg_tasks.discard)
 
     ingestor = Ingestor(settings, db, sessions_changed)
     router = Router(settings, db, cli, channel_hub.publish)
@@ -110,14 +145,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # uvicorn 이 로깅 설정을 끝낸 뒤라 여기서 붙임
+        for name in ("uvicorn.access", "uvicorn.error"):
+            logging.getLogger(name).addFilter(_RedactToken())
         await ingestor.sync()
         ingest_task = asyncio.create_task(ingestor.run())
         await local.start(router.handle)
         discord = None
+        app.state.discord = None
         if settings.discord_token:
             from .channel.discord_adapter import DiscordAdapter
 
             discord = DiscordAdapter(settings.discord_token)
+            app.state.discord = discord
             router.add_adapter(discord)
             await discord.start(router.handle)
         else:
@@ -172,6 +212,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def index():
         return FileResponse(STATIC / "index.html")
 
+    @app.get("/api/health", dependencies=api)
+    async def health():
+        d = app.state.discord
+        return {
+            "ok": True,
+            "channels": {"local": "ready", "discord": d.status if d else "off"},
+            "sessions": len(db.sessions()),
+        }
+
     # ---------- 세션 ----------
 
     @app.get("/api/sessions", dependencies=api)
@@ -206,7 +255,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/sessions/{name}/send", dependencies=api)
     async def send(name: str, body: SendIn):
         try:
-            return await cli.send(name, body.text, wait=body.wait, timeout_s=body.timeout_s,
+            timeout_s = body.timeout_s or (DEFAULT_WAIT_TIMEOUT_S if body.wait else None)
+            return await cli.send(name, body.text, wait=body.wait, timeout_s=timeout_s,
                                   submit=body.submit, force=body.force, now=body.now)
         except CliError as e:
             raise cli_call(e)
@@ -268,7 +318,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/events/{event_id}/reply", dependencies=api)
     async def reply(event_id: str, text: str = Form(""), session: str = Form(""),
                     files: list[UploadFile] | None = File(None)):
-        out = [OutboundFile(f.filename or "file", await f.read(), f.content_type) for f in files or []]
+        files = files or []
+        if not text.strip() and not files:
+            raise HTTPException(400, "보낼 텍스트나 파일이 필요")
+        if len(files) > MAX_REPLY_FILES:
+            raise HTTPException(413, f"첨부는 최대 {MAX_REPLY_FILES}개")
+        out = []
+        for f in files:
+            # 한도 + 1 바이트까지만 읽어서 넘는지 판단 (큰 파일을 통째로 메모리에 안 올림)
+            data = await f.read(MAX_REPLY_FILE_BYTES + 1)
+            if len(data) > MAX_REPLY_FILE_BYTES:
+                raise HTTPException(413, f"파일이 너무 큼 (> 10MB): {f.filename}")
+            out.append(OutboundFile(f.filename or "file", data, f.content_type))
         try:
             return await router.reply(event_id, session or None, text, out)
         except LookupError as e:

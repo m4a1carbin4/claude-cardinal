@@ -261,11 +261,16 @@ export interface SendResult {
   turnIndex: number; // 이 메시지가 만들 턴의 위치 (보내기 직전 턴 개수)
 }
 
-const ACCEPT_TIMEOUT_MS = 10_000;
+// Enter 한 번 누르고 받았다는 신호를 기다리는 시간, 그리고 Enter 를 몇 번까지 눌러볼지
+const ACCEPT_WAIT_MS = 3_000;
+const ENTER_ATTEMPTS = 3;
+// SessionStart 훅 직후엔 claude 화면이 아직 입력을 못 받음. 이때 Enter 를 치면 먹혀서
+// 텍스트가 입력창에 남은 채 멈춤 (실측: 세션 4개를 동시에 띄우고 바로 보냈을 때 재현)
+const STARTUP_SETTLE_MS = 1_500;
 
 // 보낸 뒤 훅 상태가 sentAt 이후로 한 번이라도 바뀌면 claude가 입력을 받은 것
-async function waitAccepted(name: string, sentAt: number): Promise<boolean> {
-  const deadline = Date.now() + ACCEPT_TIMEOUT_MS;
+async function waitAccepted(name: string, sentAt: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const st = await getStatus(name);
     if (!st.alive) return false;
@@ -297,6 +302,12 @@ export async function send(name: string, text: string, opts: SendOptions = {}): 
     if (st.state === 'waiting' && !opts.force)
       throw new Error(`${name} 은(는) 승인 대기 중이라 메시지가 다이얼로그에 들어감. \`cardinal keys\`로 처리하거나 --force`);
 
+    // 막 뜬 세션이면 화면이 입력을 받을 수 있게 될 때까지 조금 더
+    if (st.event === 'SessionStart' && st.stateAt) {
+      const age = Date.now() - Date.parse(st.stateAt);
+      if (age < STARTUP_SETTLE_MS) await sleep(STARTUP_SETTLE_MS - age);
+    }
+
     const transcript = transcriptFile(name);
     const turnIndex = transcript ? readTurns(transcript).length : 0;
     const sentAt = Date.now();
@@ -304,8 +315,13 @@ export async function send(name: string, text: string, opts: SendOptions = {}): 
     if (opts.submit === false) return { sentAt, accepted: false, transcript, turnIndex };
     // 붙여넣기 직후 바로 Enter 치면 TUI가 가끔 삼킴
     await sleep(200);
-    await tmux.sendKeys(st.tmux, 'Enter');
-    const accepted = await waitAccepted(name, sentAt);
+    // Enter 가 먹히면 텍스트가 입력창에 남아 있으니 다시 누름.
+    // 이미 받았는데 훅만 늦은 경우엔 빈 입력창에 Enter 라 아무 일도 안 일어남
+    let accepted = false;
+    for (let i = 0; i < ENTER_ATTEMPTS && !accepted; i++) {
+      await tmux.sendKeys(st.tmux, 'Enter');
+      accepted = await waitAccepted(name, sentAt, ACCEPT_WAIT_MS);
+    }
     return { sentAt, accepted, transcript, turnIndex };
   });
 }
@@ -321,6 +337,21 @@ export function turnOf(name: string, res: SendResult): Turn | undefined {
 }
 
 export const turnText = (t?: Turn) => (t?.texts.length ? t.texts.join('\n\n') : undefined);
+
+const SETTLE_TIMEOUT_MS = 5_000;
+
+// Stop 훅은 마지막 답 줄이 트랜스크립트 파일에 쓰이기 전에 옴 (실측: Stop 보다 80~130ms 늦게 파일에 나타남).
+// Stop 직후 바로 읽으면 마지막 답을 놓치니까, 그 턴이 end_turn 으로 끝났다고 기록될 때까지 잠깐 더 기다림.
+// waiting(승인 대기) 처럼 턴이 안 끝난 채 멈춘 경우는 기다려도 안 끝나니까 바로 지금까지의 걸 돌려줌.
+export async function settledTurnOf(name: string, res: SendResult, st: SessionStatus): Promise<Turn | undefined> {
+  if (st.state !== 'idle') return turnOf(name, res);
+  const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+  for (;;) {
+    const t = turnOf(name, res);
+    if (t?.complete || Date.now() > deadline) return t;
+    await sleep(50);
+  }
+}
 
 export async function keys(name: string, ...k: string[]): Promise<void> {
   const st = await getStatus(name);

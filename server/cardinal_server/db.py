@@ -327,7 +327,10 @@ class DB:
         )
         return self.one("SELECT * FROM replies WHERE id=?", (rid,))  # type: ignore[return-value]
 
-    def has_reply(self, event_id: str, session_id: str) -> bool:
+    def has_reply(self, event_id: str, session_id: str | None = None) -> bool:
+        """이 이벤트에 나간 답장이 있나. session_id 없으면 누가 보냈든"""
+        if session_id is None:
+            return bool(self.one("SELECT 1 FROM replies WHERE event_id=? AND status='sent'", (event_id,)))
         return bool(
             self.one("SELECT 1 FROM replies WHERE event_id=? AND session_id=? AND status='sent'", (event_id, session_id))
         )

@@ -161,14 +161,32 @@ async function main() {
         now: o.now,
         queueTimeoutMs: o['queue-timeout'] ? Number(o['queue-timeout']) * 1000 : undefined,
       });
-      if (!res.accepted && !o['no-enter']) console.error(`[${name}] 보냈지만 claude가 받았다는 신호를 못 봄 (10초)`);
+      const notAccepted = !res.accepted && !o['no-enter'];
+      if (notAccepted && o.wait) {
+        // 안 들어간 메시지의 턴을 기다려봐야 안 끝남 (예전엔 여기서 --timeout 까지 멈췄음)
+        if (o.json) console.log(JSON.stringify({ sentAt: res.sentAt, accepted: false, timedOut: false, last: null }));
+        fail(`[${name}] Enter 를 ${3}번 눌렀지만 claude가 받았다는 신호가 없음. 입력창에 텍스트가 남아 있을 수 있음 (cardinal screen 으로 확인)`);
+      }
+      if (notAccepted) console.error(`[${name}] 보냈지만 claude가 받았다는 신호를 못 봄`);
       if (o.wait) {
-        const st = await session.wait(name, { since: res.sentAt, timeoutMs });
-        const last = session.turnText(session.turnOf(name, res));
-        if (o.json) console.log(JSON.stringify({ sentAt: res.sentAt, accepted: res.accepted, status: st, last: last ?? null }, null, 2));
-        else {
+        // 대기 시간 초과는 전달 실패가 아님 (메시지는 이미 들어감). 그때까지의 부분 응답과 함께 timedOut 으로 알려줌
+        let st: SessionStatus;
+        let timedOut = false;
+        try {
+          st = await session.wait(name, { since: res.sentAt, timeoutMs });
+        } catch (e: any) {
+          if (!e?.status) throw e;
+          st = e.status;
+          timedOut = true;
+        }
+        const last = session.turnText(timedOut ? session.turnOf(name, res) : await session.settledTurnOf(name, res, st));
+        if (o.json) {
+          console.log(JSON.stringify({ sentAt: res.sentAt, accepted: res.accepted, timedOut, status: st, last: last ?? null }, null, 2));
+        } else {
           if (st.state === 'waiting') console.error(`[${name}] 승인 대기 중: ${st.detail ?? ''}`);
           console.log(last ?? '');
+          // 텍스트 모드는 스크립트가 알아챌 수 있게 종료 코드로
+          if (timedOut) fail(`대기 시간 초과: ${name} (${st.state}). 메시지는 들어갔고 위는 지금까지의 부분 응답`);
         }
       } else if (o.json) console.log(JSON.stringify({ sentAt: res.sentAt, accepted: res.accepted }));
       break;

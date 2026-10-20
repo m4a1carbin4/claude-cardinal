@@ -134,16 +134,20 @@ Meta and hook files have different writers (Cardinal vs hooks), so they live in 
 All `send`s into the same session **line up one at a time** (multiple CLIs, the server and master sessions alike). See `send` in `src/session.ts`; the lock is `src/lock.ts`.
 
 1. **Take the session lock**: `send.lock` in the hook dir. If another `send` is between paste and Enter, wait.
-   - The lock file holds a pid. If that process is dead, the lock is cleared and we proceed.
-   - The pid is written to a tmp file first and the lock is created with `link`, so an empty lock file is never visible.
+   - The lock file holds `<pid> <acquired ms>`. If that process is dead or has held it **over 30 minutes**, it's treated as stale and cleared (so a pid reused by another process eventually releases too).
+   - Right before clearing, the content is re-read so a lock someone just took isn't removed. On release, only our own lock is removed.
+   - The content is written to a tmp file first and the lock is created with `link`, so an empty lock file is never visible.
+   - The old format (pid only) is still read.
 2. **Wait for idle**: if the session is `busy`/`starting`, wait until idle (default max 600s, `--queue-timeout`).
    - Why: a message sent while busy doesn't queue; it **gets injected into the running turn**. Measured: 2 messages sent while busy → 3 `UserPromptSubmit`s, 1 `Stop`. Then one message ≠ one turn, and `--wait`/`auto_reply` pick up someone else's answer.
    - `--now`: don't wait, inject immediately (when you mean to).
 3. Refuse if the target is `waiting` (the text would land in the dialog). `--force` overrides.
-4. Remember the transcript's turn count right before sending (= where this message's turn will be).
-5. `tmux set-buffer` → `paste-buffer -p` (bracketed paste). Plain `send-keys` would submit at every newline.
-6. Sleep 200ms, then `Enter`; sending it immediately sometimes gets swallowed by the TUI. `--no-enter` pastes only (and releases the lock right away).
-7. **Confirm receipt**: release the lock once the hook state changes after the send time (max 10s, polled every 50ms). If not seen, just warn (`accepted: false`).
+4. **Settle a just-started session**: if the state became idle via `SessionStart` less than 1.5s ago, wait until 1.5s. Right after the `SessionStart` hook the claude UI can't take input yet and Enter is swallowed (measured: with 4 sessions started at once and events sent immediately, text was left sitting in the input box).
+5. Remember the transcript's turn count right before sending (= where this message's turn will be).
+6. `tmux set-buffer` → `paste-buffer -p` (bracketed paste). Plain `send-keys` would submit at every newline.
+7. Sleep 200ms, then `Enter`; sending it immediately sometimes gets swallowed by the TUI. `--no-enter` pastes only (and releases the lock right away).
+8. **Confirm receipt + retry Enter**: watch for 3s whether the hook state changes after the send time (polled every 50ms). If not, press Enter again and wait another 3s, **up to 3 times** (a swallowed Enter leaves the text in the input box). If it was received and only the hook is late, Enter on an empty input does nothing. Still nothing → `accepted: false`.
+   - With `--wait` and `accepted: false`, fail right away instead of waiting for the turn (exit 1; with `--json` the result JSON is printed first). Previously it waited until `--timeout` for the turn of a message that never went in.
 
 Concurrent `send`s go in the order they acquire the lock.
 
@@ -155,7 +159,9 @@ Straight `tmux send-keys`. For the trust dialog (`Down Enter`), permission choic
 
 Polls the state file every 0.5s. By default returns on `idle`/`waiting`/`ended`.
 `send --wait` only accepts states recorded after the send time, so it doesn't mistake the pre-send `idle` for completion.
-When done it prints the reply of **the turn at the position remembered in step 4** (= its own turn), not the last turn, so a `send` that starts the next turn right after can't steal it. If the transcript changed (e.g. `/clear`), it falls back to the last turn.
+When done it prints the reply of **the turn at the position remembered in step 5** (= its own turn), not the last turn, so a `send` that starts the next turn right after can't steal it. If the transcript changed (e.g. `/clear`), it falls back to the last turn.
+- **Waiting for the transcript after Stop**: the `Stop` hook arrives **before** the final reply line is written to the transcript file (measured: it shows up 80–130ms after `Stop`). Reading right away missed the final answer and `auto_reply` sent nothing. So it keeps checking for up to 5s until the turn is recorded as ending with `end_turn`. A turn stopped at `waiting` isn't waited for; what's there so far is returned.
+- **Timeout**: not finishing within `--timeout` isn't a failure but "delivered, not done yet". With `--json`: `timedOut: true` plus the partial reply, exit 0. In text mode: prints the partial reply, then exit 1.
 `new --prompt --wait` waits for an `idle` whose event is `Stop` (skips the SessionStart idle).
 
 ### report

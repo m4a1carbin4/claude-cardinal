@@ -100,7 +100,10 @@ class Ingestor:
                 if sid not in seen:
                     self.db.mark_deleted(sid)
 
-            snapshot = json.dumps(self.db.sessions(), default=str)
+            # updated_at 은 매번 바뀌니까 빼고 비교 (안 빼면 변화가 없어도 3초마다 /ws/events 푸시)
+            snapshot = json.dumps(
+                [{k: v for k, v in s.items() if k != "updated_at"} for s in self.db.sessions()], default=str
+            )
             if snapshot != self._last_snapshot:
                 self._last_snapshot = snapshot
                 self.on_change()
