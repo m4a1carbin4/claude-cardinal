@@ -80,9 +80,15 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 채널 켜기
 
 ## 3. 서버 기동 순서
 
-`app.py`의 `create_app()`이 객체를 만들고, `lifespan()`(`app.py:147`)이 켜고 끔.
+`app.py`의 `create_app()`이 객체를 만들고, `lifespan()`(`app.py:148`)이 켜고 끔.
 
 ```
+시작 전 확인 (`__main__.py` → `running.py` `precheck`)
+ · `~/.cardinal/server.json`의 pid가 살아 있으면 → "카디널 서버가 이미 떠 있음: pid …" 출력하고 exit 1
+ · 포트를 다른 프로세스가 쓰고 있으면 → "포트 … 를 다른 프로세스가 쓰고 있음 (--port 로 다른 포트 지정)" exit 1
+ · 죽은 서버가 남긴 server.json(pid 없음)은 무시하고 시작
+ (예전엔 확인 없이 떠서, 포트 충돌로 죽으면서 살아있는 서버의 server.json 을 덮어쓰고 지웠음)
+
 create_app()
  ├─ DB(settings.db_path)        ← 파일 없으면 만들고 스키마 적용 (CREATE TABLE IF NOT EXISTS), WAL 모드
  ├─ Cli(settings)               ← CARDINAL_HOME 박은 env 준비
@@ -97,6 +103,7 @@ lifespan 시작
  3. local.start(router.handle)
  4. DISCORD_TOKEN 있으면 DiscordAdapter 만들고 start → client.start(token) 태스크 (게이트웨이 접속)
  5. ~/.cardinal/server.json 쓰기 {url, token, pid}, 권한 600
+    (쓰기 직전에 다른 서버가 떴는지 한 번 더 확인 → 떴으면 시작 실패, 덮어쓰지 않음)
     → 세션 안의 `cardinal reply`가 이걸 읽고 서버를 찾음
  ── 서비스 중 ──
 lifespan 종료
@@ -118,7 +125,7 @@ POST /api/sessions
 ```
 
 ```
-클라이언트          app.create_session (app.py:231)       cardinal CLI (TS)                  tmux / claude
+클라이언트          app.create_session (app.py:235)       cardinal CLI (TS)                  tmux / claude
     │ POST ───────────▶│
     │                  │ pydantic SessionIn 검증
     │                  │  (role ∈ worker|master, match ∈ prefix|contains|regex|mention …)
@@ -134,7 +141,7 @@ POST /api/sessions
 
 단계별:
 
-1. **검증** (`app.py:93` `SessionIn`, `:54` `RouteIn`): 모르는 `match` 값이나 `role`은 여기서 422로 튕김.
+1. **검증** (`app.py:94` `SessionIn`, `:54` `RouteIn`): 모르는 `match` 값이나 `role`은 여기서 422로 튕김.
 2. **CLI 호출** (`cli.py:47` `Cli.new`): `cardinal new <이름> --role <role> [--prompt …] --json [-- claude 인자]`.
    - `asyncio.create_subprocess_exec`로 부름 (셸 안 거침). 종료 코드가 0이 아니면 stderr의 `cardinal: …` 메시지를 `CliError`로 → HTTP 400.
    - CLI 쪽 동작은 [세션 시스템](session-system.md#세션-만들기) 그대로: 고정 작업 폴더, `--session-id` 미리 지정, 훅 `--settings` 주입, 역할 프롬프트 (외부 이벤트면 `cardinal reply`로 답하라는 안내 포함).
@@ -157,7 +164,7 @@ POST /api/sessions
 `ingest.py`. 훅은 파일에만 쓰고 서버랑 직접 통신 안 함. 그래서 서버가 꺼져 있어도 훅이 실패하지 않음.
 
 ```
-claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:111)
+claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:181)
    │ state.json 덮어쓰기 (tmp → rename) ──────▶│ state.json                          │
    │ events.jsonl 한 줄 추가 ─────────────────▶│ events.jsonl                         │
                                               │── watchfiles 변경 알림 (150ms 디바운스) ─▶│ _kick.set()
@@ -172,13 +179,13 @@ claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/
                                                                                      │ 변화 없어도 3초마다 한 번 더 (tmux가 밖에서 죽는 경우)
 ```
 
-`sync()` (`ingest.py:82`) 자세히:
+`sync()` (`ingest.py:151`) 자세히:
 
 1. **tmux 생존 확인** (`_tmux_sessions`): `tmux list-sessions -F '#{session_name}'` 한 번. tmux 서버 자체가 없으면 실패 → 빈 집합.
 2. **세션 upsert** (`db.py:149`): 키는 `meta.instanceId` (예전 세션은 `meta.claudeSessionId`). 훅 폴더는 meta가 가리키는 것만 읽음. 지금 claude 세션 ID(`state.json`의 `claudeSessionId`, `/clear` 하면 바뀜)는 `claude_session_id` 칼럼으로.
    - tmux에 없으면 state.json 내용과 상관없이 `state='ended'`, `alive=0`.
    - `ON CONFLICT DO UPDATE`로 상태 칼럼들만 갱신, `deleted_at=NULL`로 되돌림.
-3. **이벤트 따라잡기** (`_tail_events`, `ingest.py:53`):
+3. **이벤트 따라잡기** (`_tail_events`, `ingest.py:122`):
    - `ingest_offsets`에서 이 세션을 어디까지 읽었는지(바이트) 가져옴.
    - 파일 크기가 더 크면 그 뒤만 읽음. **마지막 `\n`까지만** 처리 (훅이 쓰는 중인 반쪽 줄은 다음 차례).
    - 줄마다 JSON 파싱해서 `session_events`에 넣고, 새 오프셋까지 **한 트랜잭션**으로 커밋 (`db.py:210`). 중간에 죽어도 중복/누락 없음.
@@ -198,8 +205,8 @@ claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/
 | 입구 | 코드 | 만드는 것 |
 | --- | --- | --- |
 | 디스코드 메시지 | `discord_adapter.py:41` `on_message` | `InboundMessage(platform="discord", …)` |
-| `POST /api/channel/inbound` | `app.py:312` | `InboundMessage(platform="local", …)` |
-| `/ws/channel`에 `{"type":"message",…}` | `app.py:380` | `InboundMessage(platform="local", …)`, 첨부는 base64 |
+| `POST /api/channel/inbound` | `app.py:316` | `InboundMessage(platform="local", …)` |
+| `/ws/channel`에 `{"type":"message",…}` | `app.py:384` | `InboundMessage(platform="local", …)`, 첨부는 base64 |
 
 디스코드 어댑터가 채우는 값:
 
@@ -281,7 +288,7 @@ InboundMessage
 3. **`pending` 기록**: `deliveries`에 `pending` 행을 먼저 넣고 `/ws/channel`에 `{"type":"delivery", …, "status":"pending"}` 푸시.
 4. **세션 락** (서버 안): 세션마다 `asyncio.Lock` 하나. 같은 세션에 가는 전달은 하나씩. `auto_reply`면 답장까지 끝나야 다음 이벤트로 넘어감.
 5. **보내기** (`cli.py:56` `Cli.send`): `cardinal send <이름> - --queue-timeout 600 --json`, 텍스트는 **stdin으로** 넘김 (인자로 넘기면 `-`로 시작하는 본문을 옵션으로 오해함).
-   - CLI 안에서 ([세션 시스템 send](session-system.md#send)): 세션 파일 락 → `busy`면 idle 대기 → `waiting`이면 거부 → 붙여넣기 → 200ms → `Enter` → 훅 상태가 바뀌는지(받았는지) 확인 (`src/session.ts:288-327`).
+   - CLI 안에서 ([세션 시스템 send](session-system.md#send)): 세션 파일 락 → `busy`면 idle 대기 → `waiting`이면 거부 → 붙여넣기 → 200ms → `Enter` → 훅 상태가 바뀌는지(받았는지) 확인 (`src/session.ts:312-358`).
    - 서버 쪽 subprocess 타임아웃은 idle 대기를 감안해서 `600 + 30`초.
 6. **결과 기록**: claude가 받았으면(`accepted`) `sent`, 못 받았거나 CLI 에러면 `failed` + 사유로 같은 행을 갱신.
 7. `/ws/channel`에 `{"type":"delivery", event_id, session, status}` 푸시.
@@ -299,9 +306,9 @@ claude 입장에서 이 텍스트는 **붙여넣기(paste)로 들어온 입력**
    │ cardinal reply evt_… "…" --file a.png
    │────────────────────────────▶│ 1. 텍스트/파일 검사
    │                             │ 2. 서버 주소 찾기
-   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:319)
+   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:323)
    │                             │                                             │  UploadFile → OutboundFile
-   │                             │                                             │ router.reply (router.py:199)
+   │                             │                                             │ router.reply (router.py:203)
    │                             │                                             │  이벤트 조회 → 어댑터 고르기
    │                             │                                             │  adapter.send_reply ─────────────▶│ 원래 메시지에 답장
    │                             │                                             │  replies INSERT (sent/failed)
@@ -318,8 +325,8 @@ CLI 쪽 (`src/reply.ts`):
 
 서버 쪽:
 
-4. **엔드포인트** (`app.py:319`): 폼 필드를 받아 `UploadFile`을 바이트로 읽어 `OutboundFile(filename, data, content_type)`로. 서버에서도 한 번 더 검사: 텍스트·파일 둘 다 없으면 400, 파일 11개 이상이나 10MB 초과면 413 (CLI를 안 거치고 API를 직접 불러도 막히게).
-5. **`router.reply`** (`router.py:199`):
+4. **엔드포인트** (`app.py:323`): 폼 필드를 받아 `UploadFile`을 바이트로 읽어 `OutboundFile(filename, data, content_type)`로. 서버에서도 한 번 더 검사: 텍스트·파일 둘 다 없으면 400, 파일 11개 이상이나 10MB 초과면 413 (CLI를 안 거치고 API를 직접 불러도 막히게).
+5. **`router.reply`** (`router.py:203`):
    - `channel_events`에서 이벤트 조회. 없으면 `LookupError` → **404**.
    - 이벤트의 `platform`으로 어댑터 선택. 그 플랫폼이 연결 안 돼 있으면 (예: 디스코드 이벤트인데 토큰 없이 재시작) 실패.
    - `session` 이름으로 세션 ID 찾아서 기록에 붙임 (못 찾아도 답장은 보냄).
@@ -355,6 +362,7 @@ _deliver (세션 락 잡은 채로)
         → {"sentAt", "accepted", "timedOut", "status", "last": 이 메시지가 만든 턴의 응답 텍스트 전체}
  3. accepted 면 delivery 'sent', 아니면 'failed'
     timedOut 이면 'sent' + "턴이 900초 안에 안 끝나서 자동 답장 안 함" (전달은 된 거라 실패로 안 침)
+    interrupted 면 'sent' + "사람이 중단함 (Esc) → 자동 답장 안 함" (사람이 끼어든 턴은 사람 몫)
  4. sent 이고, timedOut 아니고, last 가 있고, **누가 됐든** 이 이벤트에 나간 답장(replies.status='sent')이 없으면
       → router.reply(…, source="auto")   ← 흐름 D의 5~7단계와 같음
  5. 세션 락 풂 → 다음 이벤트
@@ -363,7 +371,7 @@ _deliver (세션 락 잡은 채로)
 - `last`는 같은 트랜스크립트 파서로 **이 메시지가 만든 턴**을 골라 그 assistant 텍스트 블록 전부. 끝난 직후 다음 이벤트가 새 턴을 시작해도 남의 답을 안 가져감.
 - 이벤트를 받은 세션이든 다른 세션(마스터 등)이든 이미 `cardinal reply`로 답했으면 자동 답장은 건너뜀 → 중복 답장 없음. (예전엔 같은 세션이 답했는지만 봐서, 다른 세션이 답하면 한 번 더 나갔음)
 - 턴이 `waiting`(승인 대기)으로 멈추면 그때까지의 부분 응답이 나감.
-- 서버가 이 대기 중에 재시작되면 태스크가 사라져서 자동 답장은 안 됨.
+- 서버가 이 대기 중에 재시작되면 태스크가 사라져서 자동 답장은 안 됨. 서버 재시작은 운영자 몫이라 범위 밖.
 
 실제 기록 (`auto` 세션, `contains "auto"`):
 
@@ -378,7 +386,7 @@ _deliver (세션 락 잡은 채로)
 
 ## 9. 흐름 F: 웹 터미널 / 상태 푸시
 
-### 웹 터미널 `/ws/term/<이름>` (`app.py:343` → `terminal.py:17`)
+### 웹 터미널 `/ws/term/<이름>` (`app.py:347` → `terminal.py:17`)
 
 1. 토큰 검사 → DB에서 이름으로 세션 찾기. 없거나 `alive=0`이면 `4404`로 닫음.
 2. `ptyprocess`로 pty를 만들고 그 안에서 `tmux attach-session -t =<tmux이름>` (관전 모드면 `-r -f ignore-size`).
@@ -401,8 +409,8 @@ _deliver (세션 락 잡은 채로)
 
 ### 인증
 
-- HTTP: 모든 라우트에 `Depends(auth)` (`app.py:188`). `?token=` 또는 `Authorization: Bearer`. 틀리면 401.
-- WS: `ws_auth` (`app.py:192`)가 accept 전에 검사, 틀리면 `4401`로 닫음.
+- HTTP: 모든 라우트에 `Depends(auth)` (`app.py:192`). `?token=` 또는 `Authorization: Bearer`. 틀리면 401.
+- WS: `ws_auth` (`app.py:196`)가 accept 전에 검사, 틀리면 `4401`로 닫음.
 - `CARDINAL_TOKEN`이 없으면 전부 통과 (기본 바인딩이 127.0.0.1이라).
 - uvicorn 로그(`uvicorn.access`, `uvicorn.error`)에 찍히는 `?token=xxx`는 `token=***`로 가림 (`_RedactToken` 필터, 서버 기동 때 붙임). 웹 페이지가 쿼리로 토큰을 써서 그대로 두면 로그에 남았음.
 
@@ -498,10 +506,13 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 | 디스코드 API 에러 (권한 없음 등) | `send_reply` | `replies.failed` + 502 |
 | 서버가 꺼져 있을 때 `cardinal reply` | `serverInfo` / fetch | "서버 정보 없음" 또는 연결 실패, exit 1. 답장은 유실 (재시도 없음) |
 | 서버가 꺼져 있을 때 훅 이벤트 | 훅은 파일만 씀 | 유실 없음. 다음 기동 때 오프셋부터 따라잡음 |
-| `auto_reply` 대기 중 서버 재시작 | `_bg` 태스크 | 태스크 소멸, 자동 답장 안 됨. delivery는 `sent`로 남음 |
+| `auto_reply` 대기 중 서버 재시작 | `_bg` 태스크 | 태스크 소멸, 자동 답장 안 됨. **범위 밖 (서버 재시작은 운영자 몫)** |
 | 같은 세션에 이벤트 여러 개가 동시에 옴 | `_deliver` | 하나씩 차례로 (뒤에 온 건 `pending`으로 대기). 각자 자기 턴. **예전엔 한 프롬프트로 합쳐졌음 → 해결** |
 | 세션이 오래 작업 중 | CLI `send` | idle 될 때까지 최대 600초 대기 후 실패 (`failed` "대기 시간 초과") |
-| Esc 중단 / 백그라운드 알림 턴 | 훅 상태 | 상태가 `busy`에 멈춰서 전달이 idle 대기로 최대 600초 `pending` 후 `failed`, `auto_reply` 대기가 타임아웃까지 붙잡히거나, 엉뚱한 턴의 답이 나감 |
+| 사람이 Esc로 중단 | 상태 판정 | 사람 개입으로 처리: 상태 `idle`/`Interrupted`, 기다리던 `send --wait`는 바로 `interrupted: true`로 끝, 자동 답장 안 함 ([세션 시스템](session-system.md#esc-중단--사람이-개입한-것)) |
+| 백그라운드 작업 알림 턴 | 파서 | 사람 턴으로 안 셈. `report`/`last`/`--wait`는 사람 턴의 답만 |
+| 16,000바이트 넘는 텍스트 전달 | CLI `send` | **안내 (tmux 한도)**: tmux에 넘기기 전에 거부, 전달 기록 `failed` + 이유. 파일로 저장하고 경로를 보낼 것 |
+| 같은 HOME/포트로 서버를 또 띄움 | `precheck` | 시작 안 하고 exit 1. 살아있는 서버의 `server.json`은 그대로 |
 | `auto_reply`에서 send 자체가 실패 | `_deliver` | `pending` 행이 `failed`로 바뀜 (예전엔 `sent`+`failed` 두 행이 남았음 → 해결) |
 | 붙여넣기 입력이라 에이전트가 지시를 덜 믿음 | claude | 지금까지 테스트에선 문제 없음. 생기면 전달 방식을 바꿔야 함 |
 
@@ -565,7 +576,6 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 아직:
 
 - **디스코드는 실제 봇으로 안 돌려봄** (토큰 없음). 어댑터 코드만 있음.
-- `auto_reply` 대기가 서버 재시작을 못 버팀.
-- `cardinal reply` 실패 시 재시도/큐 없음.
+- 범위 밖으로 정리: 서버 재시작 시 `auto_reply` 대기 소실, `cardinal reply` 실패 시 재시도 (서버 운영은 사용자 몫).
 - 라우트는 서버 API로만 붙일 수 있음. 마스터가 CLI로 만든 워커엔 못 붙임 → 필요하면 `cardinal route` 명령.
 - 세션 전달이 붙여넣기 방식이라 claude가 `<pasted_content>`로 감쌈. 지시를 따르는 데 지금은 문제 없지만 지켜봐야 함.

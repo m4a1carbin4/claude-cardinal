@@ -29,6 +29,7 @@ from .config import Settings, load
 from .db import DB
 from .ingest import Ingestor
 from .router import Router
+from .running import running_elsewhere
 
 log = logging.getLogger("cardinal")
 STATIC = Path(__file__).parent / "static"
@@ -164,6 +165,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.info("DISCORD_TOKEN 없음 → 디스코드 채널 꺼짐 (local 채널만)")
 
         # cardinal reply 가 서버를 찾을 수 있게
+        # 사전 확인과 여기 사이에 다른 서버가 떴을 수도 있으니 덮어쓰기 직전에 한 번 더
+        if reason := running_elsewhere(settings):
+            raise RuntimeError(f"시작 안 함 — {reason}")
         info = settings.home / "server.json"
         info.write_text(json.dumps({"url": settings.url, "token": settings.token, "pid": os.getpid()}))
         info.chmod(0o600)

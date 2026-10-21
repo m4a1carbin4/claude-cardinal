@@ -47,6 +47,10 @@ export async function sendKeys(t: string, ...keys: string[]): Promise<void> {
   await tmux('send-keys', '-t', paneTarget(t), ...keys);
 }
 
+// tmux 가 명령 하나로 받는 크기 한도 (클라이언트→서버 메시지 크기). set-buffer 인자로 텍스트를 넘기는데
+// 실측 16,343바이트까지 됨 (tmux 3.6a). 버퍼 이름 길이 등 여유를 두고 16,000바이트. 이건 tmux 제약이라 따름
+export const PASTE_MAX_BYTES = 16_000;
+
 // 버퍼에 넣고 bracketed paste로 붙여넣기.
 // send-keys로 줄바꿈 섞인 텍스트 보내면 중간에 엔터로 먹혀서 이렇게 함.
 export async function pasteText(t: string, text: string): Promise<void> {

@@ -108,7 +108,7 @@ CLI를 절대경로로 박는 이유: claude의 Bash 도구가 사용자 셸 프
 | 상태 | 뜻 | 찍는 이벤트 |
 | --- | --- | --- |
 | `starting` | tmux는 떴는데 claude 준비 전 (신뢰 다이얼로그 등) | 생성 시 카디널이 씀 |
-| `idle` | 입력 대기 | `SessionStart`, `Stop`, `Notification(idle_prompt)` |
+| `idle` | 입력 대기 | `SessionStart`, `Stop`, `Notification(idle_prompt)`, 사람의 Esc 중단 (이벤트 `Interrupted`, 아래) |
 | `busy` | 작업 중 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` |
 | `waiting` | 승인 같은 사람 손 필요 | 그 밖의 `Notification` |
 | `ended` | 종료 | `SessionEnd`, `cardinal kill`, 또는 tmux 세션이 없으면 |
@@ -118,6 +118,14 @@ CLI를 절대경로로 박는 이유: claude의 Bash 도구가 사용자 셸 프
 메인 트랜스크립트엔 흔적이 없음 (백그라운드 작업으로 추정). 이걸 받아주면 끝난 세션이 계속 `busy`로 보여서 막아둠.
 턴은 항상 `UserPromptSubmit`으로 시작하니까 문제없음.
 tmux가 죽었는데 훅이 못 찍은 경우도 조회할 때 `ended`로 보정.
+
+### Esc 중단 = 사람이 개입한 것
+
+사람이 Esc로 중단하면 `Stop` 훅이 안 와서 상태가 `busy`에 남음. 그 턴은 사람 손으로 넘어간 거라, 카디널은 거기서 손을 떼고 **사람에게 맡김**.
+
+- 감지: 트랜스크립트 끝(뒤쪽 512KB)을 봐서, 마지막 사람 입력 뒤로 `[Request interrupted by user]` (도구 실행 중이면 `… for tool use]`)가 있고 그 시각이 훅 상태보다 늦으면 중단된 것.
+- 처리: 상태를 `idle` + 이벤트 `Interrupted` + "사람이 중단함 (Esc)"로 봄. CLI가 조회할 때 `state.json`에도 적음 (그 사이 훅이 새로 썼으면 안 덮음). 서버 수집기도 같은 규칙으로 DB에 반영해서 아무도 CLI를 안 불러도 웹 UI에 보임.
+- 결과: 기다리던 `send --wait`는 바로 끝나고 `interrupted: true` + 중단 전까지의 응답을 돌려줌 (실측: Esc 후 1초 안). 다음 `send`는 바로 들어감 (예전엔 idle 대기로 최대 600초 막혔음). `auto_reply`는 보내지 않고 전달 기록에 "사람이 중단함 (Esc) → 자동 답장 안 함". `report`의 phase는 `interrupted`.
 
 ### 기록 파일
 
@@ -133,6 +141,7 @@ meta랑 훅 파일은 쓰는 쪽이 달라서 (카디널 vs 훅) 폴더부터 �
 
 같은 세션에 들어가는 `send`는 전부 **한 줄로 섬** (CLI 여러 개, 서버, 마스터 세션 다 포함). `src/session.ts`의 `send`, 락은 `src/lock.ts`.
 
+0. **크기 확인**: 텍스트가 16,000바이트를 넘으면 바로 거부 (tmux 한도, [안내](#알려진-문제--할-것)).
 1. **세션 락 잡기**: 훅 폴더의 `send.lock`. 다른 `send`가 붙여넣기~Enter 하는 중이면 기다림.
    - 락 파일 내용은 `<pid> <잡은 시각 ms>`. 잡고 있던 프로세스가 죽었거나 **30분 넘게** 잡혀 있으면 죽은 락으로 보고 치움 (pid가 다른 프로세스에 재사용돼서 살아 보이는 경우도 결국 풀림).
    - 치우기 직전에 내용을 다시 읽어서, 그 사이 남이 새로 잡은 락은 안 지움. 풀 때도 내 락일 때만 지움.
@@ -178,6 +187,7 @@ meta랑 훅 파일은 쓰는 쪽이 달라서 (카디널 vs 훅) 폴더부터 �
    | `working` | `busy` |
    | `waiting` | 승인 대기 |
    | `done` | `idle` (턴 끝나고 입력 대기) |
+   | `interrupted` | `idle`인데 사람이 Esc로 중단함 (턴은 안 끝남) |
 
 3. **마지막 응답**: 트랜스크립트에서 마지막 턴을 파싱해서 가져옴.
 
@@ -192,10 +202,20 @@ user       tool_result
 assistant  text          ← 마지막 답 (stop_reason: end_turn)
 ```
 
-`src/transcript.ts`가 이걸 턴으로 묶음:
-- 턴 시작 = `user` 줄 중에 `tool_result`가 아니고 `isMeta`/`isSidechain`도 아닌 것
-- 그 뒤 `assistant` 줄의 text 블록 전부 → `texts` (중간 보고 포함), tool_use → `tools`
+`src/transcript.ts`가 이걸 턴으로 묶음. `user` 줄이라고 다 사람 입력이 아니라서 종류를 나눔 (전부 실측으로 확인):
+
+| `user` 줄 | 구분 | 처리 |
+| --- | --- | --- |
+| 사람 입력, `send`로 붙여넣은 것 | `origin.kind: "human"` | **턴 시작** |
+| 백그라운드 작업 완료 알림 `<task-notification>…` | `origin.kind: "task-notification"` | claude가 스스로 시작한 턴. 사람 턴으로 안 세고, 그 답이 앞 사람 턴에 섞이지 않게 끊음 |
+| `[Request interrupted by user]` (`… for tool use]`) | origin 없음 | 진행 중이던 사람 턴을 `interrupted`로 끝냄 |
+| `/clear`·`/compact` 명령 줄, 명령 출력, 압축 요약 | origin 없음 | 무시 (턴을 끊지도 않음. 턴 도중 자동 압축 뒤 이어지는 답은 같은 턴) |
+| `tool_result`, `isMeta`, `isSidechain` | | 무시 |
+
+- `origin` 필드가 없던 예전 버전 트랜스크립트는 내용 패턴(`<command-name>`, `<local-command-`, `<task-notification>`, `This session is being continued` 등)으로 구분.
+- 턴 시작 뒤 `assistant` 줄의 text 블록 전부 → `texts` (중간 보고 포함), tool_use → `tools`
 - 마지막 `assistant` 줄의 `stop_reason`이 `end_turn`이면 `complete`
+- 예전엔 사람 입력이 아닌 줄도 전부 턴 시작으로 봐서, `/clear`·`/compact` 뒤에 `last`가 비거나, 백그라운드 알림에 대한 답이 "마지막 턴"으로 나왔음. 실제 트랜스크립트로 확인: 명령/요약/알림 줄이 섞인 파일에서 예전 9턴 → 지금 사람 턴 1개. 백그라운드 알림 턴이 생겨도 `last`/`report`는 사람 턴의 답을 보여주고, 다음 `send --wait`도 자기 턴을 정확히 고름.
 
 작업 중일 때 report 하면 지금까지 쓴 부분 응답이 나오고 "아직 진행 중" 표시가 붙음. 세션이 죽은 뒤에도 트랜스크립트는 남아 있어서 report 됨.
 `last`는 같은 파싱 결과에서 마지막 턴 텍스트만 출력함. `send --wait`는 같은 파서로 자기가 만든 턴을 골라 출력함.
@@ -241,12 +261,16 @@ HTTP/웹소켓, DB, 메시지 채널은 Python 서비스로 분리됨 → [serve
 동시성 / 훅 분석에서 확인된 것 (실제 재현):
 
 - **같은 세션 안 동시 훅끼리 `state.json` 덮어쓰기.** 병렬 도구 호출이면 훅 프로세스가 같은 밀리초에 뜸 (`PreToolUse` 3개 동시 확인). 거의 동시에 시작한 두 훅은 어느 쪽이 이길지 정해져 있지 않음. 승인 대기 중인데 `busy`로 보일 수 있음 (원리만 재현, 실제 승인 창으로는 미확인).
-- **Esc로 중단하면 `busy`에서 멈춤.** `Stop` 훅이 안 뜸. 다음 입력이 올 때까지 `wait`는 타임아웃까지 대기. `send`도 idle을 기다리게 바뀌어서 **최대 600초 막힘** → 이럴 땐 `send --now`로 넣으면 그 입력으로 상태가 복구됨.
 - **`/clear` 직후 약 50ms `ended`.** `SessionEnd(clear)` → `SessionStart(clear)` 순서로 와서.
-- **백그라운드 작업이 끝나면 claude가 스스로 턴을 시작함** (`<task-notification>` 입력). 아무도 안 보냈는데 `busy`가 되고, `report`/`last`/`auto_reply`의 "마지막 턴"이 그 알림에 대한 답이 될 수 있음.
-- **트랜스크립트 파서가 사람 입력이 아닌 줄도 턴 시작으로 봄** (`/clear`, `/compact` 명령 줄, 압축 요약, `<task-notification>`). 트랜스크립트의 `origin.kind`(`human` / `task-notification`)로 구분 가능.
+- **백그라운드 작업이 끝나면 claude가 스스로 턴을 시작함** (`<task-notification>` 입력). 그동안 상태는 `busy`(실제로 일하는 중이니 맞음). 그 턴의 답은 `report`/`last`에 안 나옴 (사람 턴만 보여줌).
 - 추정 (미확인): 턴 도중 자동 압축이 일어나면 `SessionStart(compact)` 때문에 그 턴 끝까지 `idle`로 보일 것. `auth_success` 같은 알림 타입도 `waiting`으로 잘못 찍힐 것.
+
+안내 (문제 아님):
+
+- **한 번에 보낼 수 있는 텍스트는 16,000바이트까지.** tmux가 명령 하나로 받는 크기 한도라서 따름 (실측 한계 16,343바이트, tmux 3.6a). 넘으면 tmux에 넘기기 전에 `보낼 텍스트가 tmux 한 번 전달 한도를 넘음: N바이트 > 16000바이트 (tmux 제약)`으로 바로 거부. 한글은 글자당 3바이트라 약 5,300자. 긴 내용은 파일로 저장하고 경로를 보낼 것.
 
 해결된 것:
 - 이름 재사용 시 이전 세션 훅의 오염, `/clear` 뒤 옛 트랜스크립트 읽기, purge 뒤 폴더 되살아남 → 세션별 훅 폴더 ([세션 고유 키와 훅 폴더](#세션-고유-키와-훅-폴더)).
 - 동시 `send`가 한 입력으로 합쳐짐 (0.2초 이하 간격이면 항상 `firstsecond`처럼 합쳐졌음), 작업 중에 보낸 메시지가 진행 중인 턴에 끼어듦 → 세션 락 + idle 대기 ([send](#send)). 실제 claude에서 이벤트 2개를 0.1초 간격으로 넣어도 턴 2개로 따로 처리되고, 자동 답장도 각자 맞게 감.
+- Esc 중단 뒤 `busy`에 멈춰 `wait`/`send`가 막힘 → 사람 개입으로 처리 ([Esc 중단](#esc-중단--사람이-개입한-것)).
+- 트랜스크립트 파서가 명령 줄·압축 요약·백그라운드 알림을 턴으로 봄 → 사람 입력만 턴 ([report](#report-결과-보고)).

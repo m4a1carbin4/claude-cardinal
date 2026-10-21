@@ -80,9 +80,15 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # with the Discord channel
 
 ## 3. Server startup sequence
 
-`create_app()` in `app.py` builds the objects; `lifespan()` (`app.py:147`) starts and stops them.
+`create_app()` in `app.py` builds the objects; `lifespan()` (`app.py:148`) starts and stops them.
 
 ```
+Pre-start check (`__main__.py` → `running.py` `precheck`)
+ · if the pid in ~/.cardinal/server.json is alive → print "카디널 서버가 이미 떠 있음: pid …", exit 1
+ · if another process holds the port → "포트 … 를 다른 프로세스가 쓰고 있음 (--port 로 다른 포트 지정)", exit 1
+ · a server.json left by a dead server (pid gone) is ignored and startup proceeds
+ (previously it started without checking, and on the port clash it overwrote and then deleted the live server's server.json)
+
 create_app()
  ├─ DB(settings.db_path)        ← creates the file if missing, applies the schema (CREATE TABLE IF NOT EXISTS), WAL mode
  ├─ Cli(settings)               ← env with CARDINAL_HOME baked in
@@ -97,6 +103,7 @@ lifespan start
  3. local.start(router.handle)
  4. if DISCORD_TOKEN: create DiscordAdapter, start → client.start(token) task (gateway login)
  5. write ~/.cardinal/server.json {url, token, pid}, mode 600
+    (right before writing, check again whether another server came up → if so, fail startup without overwriting)
     → `cardinal reply` inside sessions reads this to find the server
  ── serving ──
 lifespan end
@@ -118,7 +125,7 @@ POST /api/sessions
 ```
 
 ```
-client              app.create_session (app.py:231)       cardinal CLI (TS)                  tmux / claude
+client              app.create_session (app.py:235)       cardinal CLI (TS)                  tmux / claude
     │ POST ───────────▶│
     │                  │ validate pydantic SessionIn
     │                  │  (role ∈ worker|master, match ∈ prefix|contains|regex|mention …)
@@ -134,7 +141,7 @@ client              app.create_session (app.py:231)       cardinal CLI (TS)     
 
 Step by step:
 
-1. **Validation** (`SessionIn` at `app.py:93`, `RouteIn` at `:54`): unknown `match` or `role` values are rejected here with 422.
+1. **Validation** (`SessionIn` at `app.py:94`, `RouteIn` at `:54`): unknown `match` or `role` values are rejected here with 422.
 2. **CLI call** (`Cli.new`, `cli.py:47`): `cardinal new <name> --role <role> [--prompt …] --json [-- claude args]`.
    - Run with `asyncio.create_subprocess_exec` (no shell). A non-zero exit turns the stderr `cardinal: …` message into a `CliError` → HTTP 400.
    - What the CLI does is as in [session system](session-system.en.md#creating-a-session): fixed workspace, pre-assigned `--session-id`, hooks via `--settings`, role prompt (including "reply to external events with `cardinal reply`").
@@ -157,7 +164,7 @@ About 4 seconds later claude fires `SessionStart` → state.json becomes `idle` 
 `ingest.py`. Hooks only write files and never talk to the server, so hooks don't fail when the server is down.
 
 ```
-claude hook (dist/hook.js <hook dir>)        ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:111)
+claude hook (dist/hook.js <hook dir>)        ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:181)
    │ overwrite state.json (tmp → rename) ────▶│ state.json                          │
    │ append a line to events.jsonl ──────────▶│ events.jsonl                         │
                                               │── watchfiles change (150ms debounce) ─▶│ _kick.set()
@@ -172,13 +179,13 @@ claude hook (dist/hook.js <hook dir>)        ~/.cardinal/hooks/<instanceId>/    
                                                                                      │ also runs every 3s without changes (tmux dying externally)
 ```
 
-`sync()` (`ingest.py:82`) in detail:
+`sync()` (`ingest.py:151`) in detail:
 
 1. **tmux liveness** (`_tmux_sessions`): one `tmux list-sessions -F '#{session_name}'`. If there's no tmux server at all, it fails → empty set.
 2. **Session upsert** (`db.py:149`): keyed by `meta.instanceId` (old sessions: `meta.claudeSessionId`). Only the hook dir that meta points to is read. The current claude session ID (`claudeSessionId` in `state.json`, changes on `/clear`) goes into the `claude_session_id` column.
    - Not in tmux → `state='ended'`, `alive=0`, regardless of state.json.
    - `ON CONFLICT DO UPDATE` refreshes only the state columns and resets `deleted_at=NULL`.
-3. **Event catch-up** (`_tail_events`, `ingest.py:53`):
+3. **Event catch-up** (`_tail_events`, `ingest.py:122`):
    - Look up how many bytes of this session were already read in `ingest_offsets`.
    - If the file is larger, read only the rest, and process **only up to the last `\n`** (a half-written line waits for the next round).
    - Parse each line into `session_events` and commit the new offset in **the same transaction** (`db.py:210`), so a crash causes neither duplicates nor gaps.
@@ -198,8 +205,8 @@ Actual offsets after testing: `helper` read up to 3668 bytes, `auto` up to 733 b
 | Entry | Code | Produces |
 | --- | --- | --- |
 | Discord message | `on_message`, `discord_adapter.py:41` | `InboundMessage(platform="discord", …)` |
-| `POST /api/channel/inbound` | `app.py:312` | `InboundMessage(platform="local", …)` |
-| `{"type":"message",…}` on `/ws/channel` | `app.py:380` | `InboundMessage(platform="local", …)`, attachments as base64 |
+| `POST /api/channel/inbound` | `app.py:316` | `InboundMessage(platform="local", …)` |
+| `{"type":"message",…}` on `/ws/channel` | `app.py:384` | `InboundMessage(platform="local", …)`, attachments as base64 |
 
 What the Discord adapter fills in:
 
@@ -281,7 +288,7 @@ Matching is case-sensitive.
 3. **Record `pending`**: insert a `pending` row in `deliveries` and push `{"type":"delivery", …, "status":"pending"}` on `/ws/channel`.
 4. **Session lock** (in the server): one `asyncio.Lock` per session. Deliveries to the same session go one at a time; with `auto_reply` the next event waits until the reply is done.
 5. **Send** (`Cli.send`, `cli.py:56`): `cardinal send <name> - --queue-timeout 600 --json`, with the text **on stdin** (as an argument, a body starting with `-` would be parsed as an option).
-   - Inside the CLI ([session system send](session-system.en.md#send)): session file lock → wait for idle if `busy` → refuse if `waiting` → paste → 200ms → `Enter` → confirm the hook state changed (received) (`src/session.ts:288-327`).
+   - Inside the CLI ([session system send](session-system.en.md#send)): session file lock → wait for idle if `busy` → refuse if `waiting` → paste → 200ms → `Enter` → confirm the hook state changed (received) (`src/session.ts:312-358`).
    - The server's subprocess timeout allows for the idle wait: `600 + 30`s.
 6. **Record the result**: update the same row to `sent` if claude received it (`accepted`), or `failed` with a reason otherwise / on CLI error.
 7. Push `{"type":"delivery", event_id, session, status}` on `/ws/channel`.
@@ -299,9 +306,9 @@ claude in a session (Bash tool)     cardinal CLI (src/reply.ts)                 
    │ cardinal reply evt_… "…" --file a.png
    │────────────────────────────▶│ 1. validate text/files
    │                             │ 2. find the server
-   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:319)
+   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:323)
    │                             │                                             │  UploadFile → OutboundFile
-   │                             │                                             │ router.reply (router.py:199)
+   │                             │                                             │ router.reply (router.py:203)
    │                             │                                             │  look up event → pick adapter
    │                             │                                             │  adapter.send_reply ─────────────▶│ reply to original message
    │                             │                                             │  INSERT replies (sent/failed)
@@ -318,8 +325,8 @@ CLI side (`src/reply.ts`):
 
 Server side:
 
-4. **Endpoint** (`app.py:319`): reads the form fields and turns each `UploadFile` into `OutboundFile(filename, data, content_type)`. The server checks again: no text and no files → 400; more than 10 files or a file over 10MB → 413 (so calling the API directly, bypassing the CLI, is also limited).
-5. **`router.reply`** (`router.py:199`):
+4. **Endpoint** (`app.py:323`): reads the form fields and turns each `UploadFile` into `OutboundFile(filename, data, content_type)`. The server checks again: no text and no files → 400; more than 10 files or a file over 10MB → 413 (so calling the API directly, bypassing the CLI, is also limited).
+5. **`router.reply`** (`router.py:203`):
    - Look up the event in `channel_events`. Missing → `LookupError` → **404**.
    - Pick the adapter by the event's `platform`. Fails if that platform isn't connected (e.g. a Discord event after restarting without a token).
    - Resolve the session name to its ID for the record (the reply is sent even if it isn't found).
@@ -355,6 +362,7 @@ _deliver (holding the session lock)
         → {"sentAt", "accepted", "timedOut", "status", "last": full text of the turn this message created}
  3. delivery 'sent' if accepted, else 'failed'
     if timedOut: 'sent' + "턴이 900초 안에 안 끝나서 자동 답장 안 함" (it was delivered, so not a failure)
+    if interrupted: 'sent' + "사람이 중단함 (Esc) → 자동 답장 안 함" (a turn a human stepped into is theirs)
  4. if sent, not timedOut, last is non-empty and **nobody** has replied to this event yet (replies.status='sent')
       → router.reply(…, source="auto")   ← same as steps 5–7 of Flow D
  5. release the session lock → next event
@@ -363,7 +371,7 @@ _deliver (holding the session lock)
 - `last` uses the same transcript parser to pick **the turn this message created** and returns all its assistant text blocks, so a next event starting a new turn right after can't steal it.
 - If anyone already answered via `cardinal reply` (the receiving session or another one, e.g. a master), the auto reply is skipped → no duplicates. (Previously only the same session was checked, so a reply from another session got a second one.)
 - If the turn stops at `waiting` (approval), the partial reply so far is sent.
-- If the server restarts during the wait, the task is gone and no auto reply is sent.
+- If the server restarts during the wait, the task is gone and no auto reply is sent. Server restarts are the operator's responsibility, so this is out of scope.
 
 Real record (`auto` session, `contains "auto"`):
 
@@ -378,7 +386,7 @@ Real record (`auto` session, `contains "auto"`):
 
 ## 9. Flow F: web terminal / status push
 
-### Web terminal `/ws/term/<name>` (`app.py:343` → `terminal.py:17`)
+### Web terminal `/ws/term/<name>` (`app.py:347` → `terminal.py:17`)
 
 1. Check the token → find the session by name in the DB. Missing or `alive=0` → close with `4404`.
 2. Create a pty with `ptyprocess` and run `tmux attach-session -t =<tmux name>` in it (spectator mode adds `-r -f ignore-size`).
@@ -401,8 +409,8 @@ The mechanism (two ptys, xterm.js, control codes) is in [web-terminal.en.md](web
 
 ### Auth
 
-- HTTP: `Depends(auth)` on every route (`app.py:188`). `?token=` or `Authorization: Bearer`; otherwise 401.
-- WS: `ws_auth` (`app.py:192`) checks before accept and closes with `4401` on failure.
+- HTTP: `Depends(auth)` on every route (`app.py:192`). `?token=` or `Authorization: Bearer`; otherwise 401.
+- WS: `ws_auth` (`app.py:196`) checks before accept and closes with `4401` on failure.
 - Without `CARDINAL_TOKEN` everything passes (the default bind is 127.0.0.1).
 - `?token=xxx` in uvicorn logs (`uvicorn.access`, `uvicorn.error`) is masked as `token=***` (`_RedactToken` filter, attached at startup). The web page passes the token in the query, so it used to end up in logs.
 
@@ -498,10 +506,13 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 | Discord API error (missing permission, …) | `send_reply` | `replies.failed` + 502 |
 | `cardinal reply` while the server is down | `serverInfo` / fetch | "no server info" or connection failure, exit 1. The reply is lost (no retry) |
 | Hook events while the server is down | hooks only write files | nothing lost; caught up from the offset on next start |
-| Server restarts during an `auto_reply` wait | `_bg` task | task gone, no auto reply; the delivery stays `sent` |
+| Server restarts during an `auto_reply` wait | `_bg` task | task gone, no auto reply. **Out of scope (server restarts are the operator's job)** |
 | Several events arrive for one session at once | `_deliver` | delivered one by one (later ones wait as `pending`), each in its own turn. **Used to merge into one prompt → fixed** |
 | Session busy for a long time | CLI `send` | waits up to 600s for idle, then fails (`failed` "대기 시간 초과") |
-| Esc interrupt / background-notification turn | hook state | state stuck at `busy`, so deliveries sit `pending` for up to 600s waiting for idle then fail; an `auto_reply` wait is held until timeout, or the answer from the wrong turn is sent |
+| A human interrupts with Esc | state | treated as human intervention: state `idle`/`Interrupted`, a waiting `send --wait` ends at once with `interrupted: true`, no auto reply ([session system](session-system.en.md#esc-interrupt--human-intervention)) |
+| Background-task notification turn | parser | not counted as a human turn; `report`/`last`/`--wait` show human turns only |
+| Text over 16,000 bytes | CLI `send` | **note (tmux limit)**: rejected before reaching tmux, delivery `failed` with the reason. Save to a file and send the path |
+| Another server started on the same HOME/port | `precheck` | refuses to start, exit 1; the live server's `server.json` is untouched |
 | The send itself fails under `auto_reply` | `_deliver` | the `pending` row becomes `failed` (used to leave both `sent` and `failed` rows → fixed) |
 | Agent trusts pasted instructions less | claude | no problems in testing so far; the delivery method would need to change if it happens |
 
@@ -565,7 +576,6 @@ Tested (local channel, real claude sessions):
 Not yet:
 
 - **Discord hasn't been run with a real bot** (no token). Only the adapter code exists.
-- `auto_reply` waits don't survive a server restart.
-- No retry/queue when `cardinal reply` fails.
+- Out of scope: losing pending `auto_reply` waits on server restart, retrying failed `cardinal reply` (running the server is the user's responsibility).
 - Routes can only be attached through the server API, not to workers a master creates via the CLI → add a `cardinal route` command if needed.
 - Deliveries are pasted, so claude wraps them in `<pasted_content>`. Instructions are followed fine for now, but it's worth watching.

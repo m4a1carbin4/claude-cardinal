@@ -74,6 +74,7 @@ const PHASE_LABEL: Record<session.Phase, string> = {
   working: '작업 중',
   waiting: '승인 대기',
   done: '완료, 입력 대기',
+  interrupted: '사람이 중단함 (입력 대기)',
 };
 
 function printReport(r: session.Report, withTools: boolean) {
@@ -91,7 +92,7 @@ function printReport(r: session.Report, withTools: boolean) {
     console.log(`\n── 도구 ${t.tools.length}회`);
     for (const c of t.tools) console.log(`  ${c.name}  ${c.input}`);
   }
-  const partial = !t.complete ? ' · 아직 진행 중, 부분 응답' : '';
+  const partial = t.interrupted ? ' · 사람이 중단함, 부분 응답' : !t.complete ? ' · 아직 진행 중, 부분 응답' : '';
   console.log(`\n── 응답 (${t.endedAt ?? '-'}${partial})`);
   console.log(t.texts.length ? t.texts.join('\n\n') : '(텍스트 응답 없음)');
 }
@@ -179,11 +180,15 @@ async function main() {
           st = e.status;
           timedOut = true;
         }
-        const last = session.turnText(timedOut ? session.turnOf(name, res) : await session.settledTurnOf(name, res, st));
+        const turn = timedOut ? session.turnOf(name, res) : await session.settledTurnOf(name, res, st);
+        const last = session.turnText(turn);
+        // 사람이 Esc 로 중단: 그 턴은 사람 손으로 넘어간 거라 실패도 완료도 아님. 지금까지의 응답만 돌려줌
+        const interrupted = !timedOut && (st.event === 'Interrupted' || !!turn?.interrupted);
         if (o.json) {
-          console.log(JSON.stringify({ sentAt: res.sentAt, accepted: res.accepted, timedOut, status: st, last: last ?? null }, null, 2));
+          console.log(JSON.stringify({ sentAt: res.sentAt, accepted: res.accepted, timedOut, interrupted, status: st, last: last ?? null }, null, 2));
         } else {
           if (st.state === 'waiting') console.error(`[${name}] 승인 대기 중: ${st.detail ?? ''}`);
+          if (interrupted) console.error(`[${name}] 사람이 중단함 (Esc). 아래는 중단 전까지의 응답`);
           console.log(last ?? '');
           // 텍스트 모드는 스크립트가 알아챌 수 있게 종료 코드로
           if (timedOut) fail(`대기 시간 초과: ${name} (${st.state}). 메시지는 들어갔고 위는 지금까지의 부분 응답`);

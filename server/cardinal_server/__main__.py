@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import sys
 
 import uvicorn
 
@@ -17,9 +18,14 @@ def main() -> None:
 
     from .app import create_app
     from .config import load
+    from .running import precheck
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = load()
+    # 이미 떠 있는 서버/포트 먼저 확인. 확인 없이 띄우면 실패하면서 살아있는 서버의 server.json 을 지웠음
+    if reason := precheck(s):
+        print(f"cardinal-server: 시작 안 함 — {reason}", file=sys.stderr)
+        sys.exit(1)
     uvicorn.run(create_app(s), host=s.host, port=s.port, log_level="info")
 
 

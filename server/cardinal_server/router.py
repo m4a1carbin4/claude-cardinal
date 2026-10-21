@@ -174,6 +174,9 @@ class Router:
                     res = await self.cli.send(name, text, wait=True, timeout_s=AUTO_REPLY_TIMEOUT_S) or {}
                     if not res.get("accepted"):
                         status, error = "failed", "claude가 받았다는 신호 없음"
+                    elif res.get("interrupted"):
+                        # 사람이 Esc 로 끼어든 거라 그 턴은 사람 몫. 자동 답장은 안 함
+                        error = "사람이 중단함 (Esc) → 자동 답장 안 함"
                     elif res.get("timedOut"):
                         # 전달은 됐음. 턴이 안 끝나서 자동 답장만 못 함 (에이전트가 cardinal reply 로 직접 답할 수는 있음)
                         error = f"턴이 {AUTO_REPLY_TIMEOUT_S}초 안에 안 끝나서 자동 답장 안 함"
@@ -181,7 +184,8 @@ class Router:
                     # CLI 가 돌려주는 last 는 이 메시지가 만든 턴의 답 (다음 턴 아님)
                     last = res.get("last")
                     # 누가 됐든 (이 세션, 마스터 등) 이미 이 이벤트에 답장했으면 자동 답장은 생략
-                    if status == "sent" and not res.get("timedOut") and last and not self.db.has_reply(ev["id"]):
+                    skip = res.get("timedOut") or res.get("interrupted")
+                    if status == "sent" and not skip and last and not self.db.has_reply(ev["id"]):
                         await self.reply(ev["id"], name, last, [], source="auto")
                 else:
                     res = await self.cli.send(name, text)

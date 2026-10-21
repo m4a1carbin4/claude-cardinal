@@ -13,10 +13,11 @@ import {
   type Role,
   type SessionMeta,
   type SessionState,
+  type SessionStateFile,
 } from './store.js';
 import { withLock } from './lock.js';
 import * as tmux from './tmux.js';
-import { lastTurn, readTurns, type Turn } from './transcript.js';
+import { interruptedAt, lastTurn, readTurns, type Turn } from './transcript.js';
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$/;
 
@@ -172,11 +173,31 @@ export interface SessionStatus extends SessionMeta {
   tool?: string;
 }
 
+const INTERRUPTED_DETAIL = '사람이 중단함 (Esc)';
+
+// Esc 로 중단하면 Stop 훅이 안 와서 상태가 busy 에 남음. 사람이 개입한 거니까 거기서 손 떼고 idle 로 봄.
+// 트랜스크립트에 마지막 사람 입력 뒤로 "[Request interrupted by user]" 가 있으면 중단된 것.
+// 알아낸 건 state.json 에도 적어서 서버 DB/웹 UI 도 같은 상태를 보게 함 (그 사이 훅이 새로 썼으면 안 덮음)
+function applyInterrupt(meta: SessionMeta, s: SessionStateFile | undefined): SessionStateFile | undefined {
+  if (!s || (s.state !== 'busy' && s.state !== 'waiting')) return s;
+  const file = transcriptFile(meta.name);
+  const at = file ? interruptedAt(file) : undefined;
+  if (!at || Date.parse(at) < Date.parse(s.at)) return s;
+  const next: SessionStateFile = { ...s, state: 'idle', at, event: 'Interrupted', detail: INTERRUPTED_DETAIL, tool: undefined };
+  const dir = stateDir(meta);
+  try {
+    if (readState(dir)?.at === s.at) writeState(dir, next);
+  } catch {
+    // 훅 폴더가 사라졌으면 그냥 보정값만 돌려줌
+  }
+  return next;
+}
+
 export async function getStatus(name: string): Promise<SessionStatus> {
   const meta = readMeta(name);
   if (!meta) throw new Error(`모르는 세션: ${name}`);
   const alive = await tmux.hasSession(meta.tmux);
-  const s = readState(stateDir(meta));
+  const s = alive ? applyInterrupt(meta, readState(stateDir(meta))) : readState(stateDir(meta));
   return {
     ...meta,
     currentClaudeSessionId: s?.claudeSessionId ?? meta.claudeSessionId,
@@ -221,7 +242,8 @@ export function lastReply(name: string): string | undefined {
 }
 
 // dead: tmux 없음 / starting: 준비 전 / working: 작업 중 / waiting: 승인 대기 / done: 턴 끝나고 입력 대기
-export type Phase = 'dead' | 'starting' | 'working' | 'waiting' | 'done';
+// interrupted: 사람이 Esc 로 중단함 (입력 대기지만 턴은 안 끝남)
+export type Phase = 'dead' | 'starting' | 'working' | 'waiting' | 'done' | 'interrupted';
 
 export interface Report {
   status: SessionStatus;
@@ -237,7 +259,9 @@ export async function report(name: string): Promise<Report> {
     : status.state === 'busy'
       ? 'working'
       : status.state === 'idle'
-        ? 'done'
+        ? status.event === 'Interrupted'
+          ? 'interrupted'
+          : 'done'
         : status.state === 'ended'
           ? 'dead'
           : status.state;
@@ -288,6 +312,13 @@ async function waitAccepted(name: string, sentAt: number, timeoutMs: number): Pr
 export async function send(name: string, text: string, opts: SendOptions = {}): Promise<SendResult> {
   const meta = readMeta(name);
   if (!meta) throw new Error(`모르는 세션: ${name}`);
+  // tmux 가 한 번에 받는 크기 한도. 넘으면 tmux 가 거부하니까 락/대기 전에 미리 알려줌
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > tmux.PASTE_MAX_BYTES)
+    throw new Error(
+      `보낼 텍스트가 tmux 한 번 전달 한도를 넘음: ${bytes}바이트 > ${tmux.PASTE_MAX_BYTES}바이트 (tmux 제약). ` +
+        `긴 내용은 파일로 저장하고 그 경로를 보내세요`,
+    );
   const dir = stateDir(meta);
   const queueTimeoutMs = opts.queueTimeoutMs ?? 600_000;
   const deadline = Date.now() + queueTimeoutMs;
@@ -344,7 +375,8 @@ const SETTLE_TIMEOUT_MS = 5_000;
 // Stop 직후 바로 읽으면 마지막 답을 놓치니까, 그 턴이 end_turn 으로 끝났다고 기록될 때까지 잠깐 더 기다림.
 // waiting(승인 대기) 처럼 턴이 안 끝난 채 멈춘 경우는 기다려도 안 끝나니까 바로 지금까지의 걸 돌려줌.
 export async function settledTurnOf(name: string, res: SendResult, st: SessionStatus): Promise<Turn | undefined> {
-  if (st.state !== 'idle') return turnOf(name, res);
+  // 사람이 중단한 턴은 기다려도 안 끝남
+  if (st.state !== 'idle' || st.event === 'Interrupted') return turnOf(name, res);
   const deadline = Date.now() + SETTLE_TIMEOUT_MS;
   for (;;) {
     const t = turnOf(name, res);

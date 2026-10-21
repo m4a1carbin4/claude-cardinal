@@ -108,7 +108,7 @@ Why the absolute CLI path: claude's Bash tool rebuilds PATH from the user's shel
 | State | Meaning | Set by |
 | --- | --- | --- |
 | `starting` | tmux is up, claude not ready yet (e.g. trust dialog) | Cardinal on create |
-| `idle` | waiting for input | `SessionStart`, `Stop`, `Notification(idle_prompt)` |
+| `idle` | waiting for input | `SessionStart`, `Stop`, `Notification(idle_prompt)`, a human Esc interrupt (event `Interrupted`, below) |
 | `busy` | working | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` |
 | `waiting` | needs a human (e.g. permission prompt) | any other `Notification` |
 | `ended` | gone | `SessionEnd`, `cardinal kill`, or tmux session missing |
@@ -118,6 +118,14 @@ Tool events only count when already inside a turn (`busy`/`waiting`), though. Oc
 fires after `Stop`, with no trace in the main transcript (probably background work). Accepting it would leave a finished session stuck at `busy`.
 Turns always start with `UserPromptSubmit`, so ignoring tool events while idle is safe.
 If tmux is dead but no hook fired, status queries report `ended` anyway.
+
+### Esc interrupt = human intervention
+
+When a human presses Esc, no `Stop` hook fires and the state stays at `busy`. That turn now belongs to the human, so Cardinal steps back and **leaves it to the human**.
+
+- Detection: look at the end of the transcript (last 512KB). If `[Request interrupted by user]` (or `… for tool use]` during a tool) comes after the last human input and is later than the hook state, the turn was interrupted.
+- Handling: the state is treated as `idle` + event `Interrupted` + "사람이 중단함 (Esc)". The CLI also writes it to `state.json` when it looks (not if a hook wrote something newer meanwhile). The server's collector applies the same rule to the DB, so the web UI shows it even if nobody runs the CLI.
+- Effect: a waiting `send --wait` ends right away with `interrupted: true` plus the reply up to the interrupt (measured: within 1s of Esc). The next `send` goes straight in (previously the idle wait blocked it up to 600s). `auto_reply` is not sent and the delivery records "사람이 중단함 (Esc) → 자동 답장 안 함". `report` shows phase `interrupted`.
 
 ### Record files
 
@@ -133,6 +141,7 @@ Meta and hook files have different writers (Cardinal vs hooks), so they live in 
 
 All `send`s into the same session **line up one at a time** (multiple CLIs, the server and master sessions alike). See `send` in `src/session.ts`; the lock is `src/lock.ts`.
 
+0. **Size check**: text over 16,000 bytes is rejected right away (tmux limit, see [notes](#known-issues--todo)).
 1. **Take the session lock**: `send.lock` in the hook dir. If another `send` is between paste and Enter, wait.
    - The lock file holds `<pid> <acquired ms>`. If that process is dead or has held it **over 30 minutes**, it's treated as stale and cleared (so a pid reused by another process eventually releases too).
    - Right before clearing, the content is re-read so a lock someone just took isn't removed. On release, only our own lock is removed.
@@ -178,6 +187,7 @@ When done it prints the reply of **the turn at the position remembered in step 5
    | `working` | `busy` |
    | `waiting` | waiting for approval |
    | `done` | `idle` (turn finished, waiting for input) |
+   | `interrupted` | `idle`, but a human interrupted with Esc (turn not finished) |
 
 3. **Last reply**: parses the last turn from the transcript.
 
@@ -192,10 +202,20 @@ user       tool_result
 assistant  text          ← final answer (stop_reason: end_turn)
 ```
 
-`src/transcript.ts` groups these into turns:
-- Turn start = a `user` line that isn't a `tool_result` and isn't `isMeta`/`isSidechain`
-- All text blocks of following `assistant` lines → `texts` (interim updates included); tool_use → `tools`
+`src/transcript.ts` groups these into turns. Not every `user` line is human input, so lines are classified (all confirmed on real transcripts):
+
+| `user` line | Marker | Handling |
+| --- | --- | --- |
+| Human input, text pasted by `send` | `origin.kind: "human"` | **turn start** |
+| Background task completion `<task-notification>…` | `origin.kind: "task-notification"` | a turn claude started itself; not counted as a human turn, and its replies don't leak into the previous human turn |
+| `[Request interrupted by user]` (`… for tool use]`) | no origin | ends the running human turn as `interrupted` |
+| `/clear`·`/compact` command lines, command output, compaction summary | no origin | ignored (doesn't break the turn either; replies continuing after a mid-turn auto-compact stay in the same turn) |
+| `tool_result`, `isMeta`, `isSidechain` | | ignored |
+
+- Older transcripts without the `origin` field are classified by content patterns (`<command-name>`, `<local-command-`, `<task-notification>`, `This session is being continued`, …).
+- After a turn start, all text blocks of `assistant` lines → `texts` (interim updates included); tool_use → `tools`
 - `complete` if the last `assistant` line has `stop_reason: end_turn`
+- Previously every non-human line counted as a turn start, so `last` came out empty after `/clear`/`/compact`, or the answer to a background notification showed up as the "last turn". Checked on real transcripts: a file mixing command/summary/notification lines went from 9 turns to 1 human turn. When a background notification turn occurs, `last`/`report` still show the human turn's answer and the next `send --wait` picks its own turn correctly.
 
 Reporting mid-turn gives the partial reply so far, marked as still in progress. Transcripts outlive the session, so dead sessions can be reported too.
 `last` prints just the last turn's text from the same parse. `send --wait` uses the same parser to pick its own turn.
@@ -241,12 +261,16 @@ HTTP/WebSocket, the DB and the message channel moved to a Python service → [se
 Confirmed by the concurrency / hook analysis (actually reproduced):
 
 - **Concurrent hooks in the same session overwrite `state.json`.** With parallel tool calls the hook processes start in the same millisecond (3 simultaneous `PreToolUse` observed). Which of two near-simultaneous hooks wins is not determined, so a session waiting for approval can show `busy` (mechanism reproduced; not observed with a real approval prompt).
-- **Esc interrupt leaves the state at `busy`.** No `Stop` hook fires. `wait` blocks until timeout until the next input. Since `send` now waits for idle, it **blocks up to 600s** too → use `send --now`; that input brings the state back.
 - **About 50ms of `ended` right after `/clear`**, because `SessionEnd(clear)` arrives before `SessionStart(clear)`.
-- **claude starts turns by itself when a background task finishes** (`<task-notification>` input). The session turns `busy` with nobody sending, and the "last turn" for `report`/`last`/`auto_reply` can be the answer to that notification.
-- **The transcript parser treats non-human lines as turn starts** (`/clear`, `/compact` command lines, compaction summaries, `<task-notification>`). They can be told apart by `origin.kind` (`human` / `task-notification`) in the transcript.
+- **claude starts turns by itself when a background task finishes** (`<task-notification>` input). Meanwhile the state is `busy` (correct, it's actually working). That turn's reply isn't shown by `report`/`last` (human turns only).
 - Inferred (unverified): auto-compaction mid-turn would show `idle` until the turn ends because of `SessionStart(compact)`. Notification types like `auth_success` would be wrongly recorded as `waiting`.
+
+Notes (not issues):
+
+- **A single send is limited to 16,000 bytes.** It's the size tmux accepts in one command, so we follow it (measured limit 16,343 bytes, tmux 3.6a). Larger text is rejected before reaching tmux with `보낼 텍스트가 tmux 한 번 전달 한도를 넘음: N바이트 > 16000바이트 (tmux 제약)`. Korean is 3 bytes per character, so about 5,300 characters. Save long content to a file and send the path.
 
 Fixed:
 - Old-session hooks corrupting a re-created name, reading the old transcript after `/clear`, dirs resurrected after purge → per-session hook dirs ([Session identity and hook dirs](#session-identity-and-hook-dirs)).
 - Concurrent `send`s merging into one input (always merged like `firstsecond` within 0.2s), messages sent while busy being injected into the running turn → session lock + idle wait ([send](#send)). With real claude, two events 0.1s apart now become two separate turns and each auto reply is correct.
+- Stuck at `busy` after an Esc interrupt, blocking `wait`/`send` → handled as human intervention ([Esc interrupt](#esc-interrupt--human-intervention)).
+- The transcript parser treated command lines, compaction summaries and background notifications as turns → human input only ([report](#report)).
