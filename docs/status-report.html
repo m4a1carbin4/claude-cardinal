@@ -166,14 +166,14 @@
   <div>
     <div class="eyebrow">CLAUDE CARDINAL · 현황 보고서</div>
     <h1>지금 무엇이 돌아가고, 무엇이 남았나</h1>
-    <div class="meta">기준 커밋 <code>1597f68</code> · 2026-10-21 · 검증은 실제 Claude Code 세션 + 스크래치 환경에서 직접 재현</div>
+    <div class="meta">기준 커밋 <code>092ef84</code> · 2026-10-22 · 검증은 실제 Claude Code 세션 + 스크래치 환경에서 직접 재현</div>
   </div>
 </header>
 
 <div class="stats">
-  <div class="stat"><div class="v">5</div><div class="k">커밋 (main)</div></div>
-  <div class="stat"><div class="v">2,906</div><div class="k">코드 줄 (TS 1,237 · Python 1,669)</div></div>
-  <div class="stat ok"><div class="v">28</div><div class="k">해결한 문제</div></div>
+  <div class="stat"><div class="v">7</div><div class="k">커밋 (main)</div></div>
+  <div class="stat"><div class="v">2,974</div><div class="k">코드 줄 (TS 1,295 · Python 1,679)</div></div>
+  <div class="stat ok"><div class="v">29</div><div class="k">해결한 문제</div></div>
   <div class="stat ok"><div class="v">0</div><div class="k">남은 높음 · 중간 이슈</div></div>
   <div class="stat"><div class="v">3</div><div class="k">남은 낮음 이슈</div></div>
   <div class="stat mid"><div class="v">6</div><div class="k">미검증 / 기능 할 일</div></div>
@@ -195,7 +195,7 @@
 <p class="lead">Claude Code 세션 여러 개를 tmux로 띄우고, 서로 일을 시키고, 디스코드 같은 외부 채널 메시지를 세션에 넘겨 답하게 하는 오케스트레이터.</p>
 
 <div class="card">
-  <p><strong>돌아가는 것</strong>: 세션 생성/제어/상태 확인 CLI, 마스터가 워커를 띄워 일 시키기, 웹 터미널, 세션 기록 SQLite, 채널 라우팅(local 채널로 끝까지 검증), 세션 안 에이전트의 직접 답장(텍스트·파일), 자동 답장.</p>
+  <p><strong>돌아가는 것</strong>: 세션 생성/제어/상태 확인 CLI (작업 폴더는 기본 고정, 세션별 지정 가능), 마스터가 워커를 띄워 일 시키기, 웹 터미널, 세션 기록 SQLite, 채널 라우팅(local 채널로 끝까지 검증), 세션 안 에이전트의 직접 답장(텍스트·파일), 자동 답장.</p>
   <p><strong>최근 집중한 것</strong>: 동시성과 상태 판정. 같은 세션에 메시지가 겹치면 합쳐지던 문제, 같은 이름 세션 꼬임, 막 뜬 세션의 Enter 먹힘, Esc 중단 뒤 멈춤, 트랜스크립트 턴 오판을 실제로 재현하고 고침. 서버 중복 실행도 시작 전에 막음.</p>
   <p><strong>남은 것</strong>: 높음·중간 이슈는 없음. 낮음 3건(동시 훅 덮어쓰기, Enter 3회 실패 시 입력창 잔여, 붙여넣기 감싸기)과, 디스코드 실제 봇 연동 등 미검증 항목. 한 번에 보낼 수 있는 텍스트가 16,000바이트인 건 tmux 제약이라 안내 사항으로 둠.</p>
 </div>
@@ -241,7 +241,7 @@
     <!-- CLI -->
     <rect class="box hl" x="500" y="110" width="380" height="150" rx="12" />
     <text class="t" x="516" y="134">cardinal CLI (TypeScript)</text>
-    <text class="s" x="516" y="158">· new: 이름별 생성 락 + 목록 확인 + 롤백</text>
+    <text class="s" x="516" y="158">· new: 생성 락 + 목록 확인 + 롤백 + --cwd/--trust</text>
     <text class="s" x="516" y="178">· send: 세션 락 → idle 대기 → 붙여넣기 → Enter 재시도</text>
     <text class="s" x="516" y="198">· --wait: 자기 턴 답 + Stop 뒤 트랜스크립트 대기</text>
     <text class="s" x="516" y="218">· report / last / screen / keys / kill</text>
@@ -285,12 +285,14 @@
   <div class="feat">
     <h3>세션 생성 · 관리 <span class="badge b-ok">동작</span></h3>
     <ul>
-      <li><code>cardinal new</code> — 고정 작업 폴더에서 claude를 tmux로 띄움</li>
+      <li><code>cardinal new</code> — claude를 tmux로 띄움. 작업 폴더는 기본 고정 워크스페이스, <code>--cwd</code>(API <code>cwd</code>)로 세션별 지정</li>
+      <li>기록(meta·훅)은 작업 폴더와 상관없이 항상 <code>~/.cardinal</code> 아래</li>
+      <li>처음 쓰는 폴더의 신뢰 다이얼로그 감지, <code>--trust</code>로 자동 수락</li>
       <li>세션 고유 키(instanceId)마다 전용 훅 폴더</li>
       <li>같은 이름 동시 생성 → 이름별 락으로 하나만 성공</li>
       <li>tmux 실패 시 meta·훅 폴더 롤백</li>
     </ul>
-    <div class="proof">확인: 같은 이름 5개 동시 → 1개 생성, 4개 거부, 상태 idle · 이름 재사용·<code>/clear</code>·purge 꼬임 없음</div>
+    <div class="proof">확인: 같은 이름 5개 동시 → 1개 생성, 4개 거부 · 이름 재사용·<code>/clear</code>·purge 꼬임 없음 · 커스텀 폴더(상대 경로·<code>/tmp</code> 링크 포함)에서도 같은 회귀 테스트 통과</div>
   </div>
 
   <div class="feat">
@@ -384,6 +386,7 @@
     <tr><td class="nowrap">전달</td><td>막 뜬 세션에서 Enter가 먹혀 900초 멈춤</td><td>1.5초 대기 + Enter 3회 + 못 받으면 즉시 실패</td></tr>
     <tr><td class="nowrap">전달</td><td><code>Stop</code>이 마지막 답 기록보다 먼저 와서 자동 답장이 빔</td><td>턴이 end_turn으로 기록될 때까지 최대 5초 대기</td></tr>
     <tr><td class="nowrap">전달</td><td><code>starting</code> 세션 전달이 즉시 실패</td><td>pending으로 기다렸다 전달</td></tr>
+    <tr><td class="nowrap">전달</td><td>신뢰 다이얼로그에 걸린 세션으로의 전달이 600초 pending</td><td>다이얼로그 감지 → 즉시 실패 + 이유, <code>--trust</code>로 자동 수락</td></tr>
     <tr><td class="nowrap">전달</td><td><code>--wait</code> 타임아웃을 전달 실패로 기록</td><td><code>timedOut</code>으로 구분, 기록은 sent</td></tr>
     <tr><td class="nowrap">전달</td><td><code>auto_reply</code> 중복 (다른 세션이 답했을 때)</td><td>이벤트 단위로 답장 여부 확인</td></tr>
     <tr><td class="nowrap">전달</td><td>외부 본문의 제어 문자</td><td>탭·줄바꿈 외 제거</td></tr>
@@ -481,7 +484,7 @@
 
 <footer>
   문서: <code>docs/session-system.md</code> · <code>docs/server.md</code> · <code>docs/web-terminal.md</code> (각 영문판 포함) ·
-  커밋 이력: <code>918710a</code> README → <code>cdfd448</code> tmux 세션 기반 → <code>1508f72</code> 서버 분리 + 채널 + 동시성 → <code>ba6f6f2</code> 중간/낮음 이슈 + 전달 안정성 → <code>1597f68</code> Esc 사람 개입 + 파서 + 서버 시작 전 확인
+  커밋 이력: <code>918710a</code> README → <code>cdfd448</code> tmux 세션 기반 → <code>1508f72</code> 서버 분리 + 채널 + 동시성 → <code>ba6f6f2</code> 중간/낮음 이슈 + 전달 안정성 → <code>1597f68</code> Esc 사람 개입 + 파서 + 서버 시작 전 확인 → <code>092ef84</code> 세션별 작업 폴더 + 신뢰 다이얼로그
 </footer>
 
 </main>
