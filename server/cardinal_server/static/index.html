@@ -43,6 +43,8 @@
   <form id="create">
     <input name="name" placeholder="세션 이름" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" />
     <select name="role"><option value="worker">worker</option><option value="master">master</option></select>
+    <input name="cwd" placeholder="작업 폴더 (절대 경로, 비우면 기본)" />
+    <label><input type="checkbox" name="trust" /> 처음 쓰는 폴더면 신뢰 자동 수락</label>
     <details><summary>채널 라우트 (선택)</summary>
       <div style="display:grid;gap:6px;margin-top:6px">
         <select name="platform"><option value="*">모든 채널</option><option value="discord">discord</option><option value="local">local</option></select>
@@ -126,7 +128,8 @@
     e.preventDefault();
     const f = new FormData(e.target);
     try {
-      const body = { name: f.get('name'), role: f.get('role'), routes: [] };
+      const body = { name: f.get('name'), role: f.get('role'), routes: [],
+                     cwd: f.get('cwd') || undefined, trust: f.get('trust') === 'on' };
       if (f.get('channel') || f.get('trigger') || f.get('match') === 'mention' || f.get('platform') !== '*')
         body.routes.push({ platform: f.get('platform'), channel: f.get('channel') || null, trigger: f.get('trigger') || null,
                            match: f.get('match'), auto_reply: f.get('auto_reply') === 'on' });

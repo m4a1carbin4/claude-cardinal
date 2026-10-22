@@ -6,7 +6,9 @@ import type { SessionStatus } from './session.js';
 
 const HELP = `cardinal — tmux + Claude Code 세션 제어
 
-  cardinal new <name> [--role worker|master] [--prompt TEXT] [--wait] [-- <claude 인자...>]
+  cardinal new <name> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [-- <claude 인자...>]
+                                             --cwd: 작업 폴더 (기본 $CARDINAL_WORKSPACE). 처음 쓰는 폴더는 신뢰 다이얼로그가 뜸
+                                             --trust: 그 다이얼로그를 자동으로 수락
   cardinal ls [--json]                       세션 목록 + 상태
   cardinal status <name> [--json]            한 세션 상태
   cardinal send <name> <text|-> [--wait] [--timeout SEC] [--now] [--queue-timeout SEC] [--no-enter] [--force]
@@ -27,7 +29,8 @@ new/send/kill 은 --json 주면 결과를 JSON으로 출력.
 서버(웹소켓, 디스코드 채널, DB)는 server/ 의 Python 서비스로 분리됨.
 
 상태: starting → idle ⇄ busy, waiting(승인 대기), ended
-세션은 전부 고정 작업 폴더에서 돔: $CARDINAL_WORKSPACE (기본 ~/.cardinal/workspace)
+세션 작업 폴더: 기본은 $CARDINAL_WORKSPACE (기본 ~/.cardinal/workspace), --cwd 로 세션별 지정.
+기록(meta/훅)은 작업 폴더와 상관없이 항상 $CARDINAL_HOME (기본 ~/.cardinal) 아래.
 `;
 
 function fail(msg: string): never {
@@ -111,6 +114,8 @@ async function main() {
       role: { type: 'string' },
       tools: { type: 'boolean' },
       prompt: { type: 'string' },
+      cwd: { type: 'string' },
+      trust: { type: 'boolean' },
       wait: { type: 'boolean' },
       timeout: { type: 'string' },
       'no-enter': { type: 'boolean' },
@@ -130,7 +135,14 @@ async function main() {
     case 'new': {
       const role = (o.role ?? 'worker') as 'worker' | 'master';
       if (role !== 'worker' && role !== 'master') fail('--role 은 worker 또는 master');
-      const meta = await session.createSession({ name: need(), role, prompt: o.prompt, claudeArgs: passthrough });
+      const meta = await session.createSession({
+        name: need(),
+        role,
+        prompt: o.prompt,
+        claudeArgs: passthrough,
+        cwd: o.cwd,
+        trust: o.trust,
+      });
       if (o.wait) {
         // 초기 프롬프트 있으면 첫 턴이 끝날 때(Stop)까지, 없으면 뜰 때(SessionStart)까지
         const st = await session.wait(meta.name, {
@@ -138,6 +150,8 @@ async function main() {
           accept: (s) => !o.prompt || s.state !== 'idle' || s.event === 'Stop',
         });
         o.json ? console.log(JSON.stringify(st, null, 2)) : printStatus(st);
+        // 신뢰 다이얼로그에서 멈춤: 기다려도 안 풀리니 바로 알려주고 실패로
+        if (st.trustPrompt) fail(`${meta.name}: 작업 폴더 신뢰 다이얼로그 대기 중. cardinal keys ${meta.name} Down Enter 로 넘기거나 다음부터 --trust`);
       } else if (o.json) console.log(JSON.stringify(await session.getStatus(meta.name), null, 2));
       else console.log(`created ${meta.name} (tmux: ${meta.tmux}, claude: ${meta.claudeSessionId})`);
       break;

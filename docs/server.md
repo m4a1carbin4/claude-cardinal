@@ -80,7 +80,7 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 채널 켜기
 
 ## 3. 서버 기동 순서
 
-`app.py`의 `create_app()`이 객체를 만들고, `lifespan()`(`app.py:148`)이 켜고 끔.
+`app.py`의 `create_app()`이 객체를 만들고, `lifespan()`(`app.py:150`)이 켜고 끔.
 
 ```
 시작 전 확인 (`__main__.py` → `running.py` `precheck`)
@@ -125,7 +125,7 @@ POST /api/sessions
 ```
 
 ```
-클라이언트          app.create_session (app.py:235)       cardinal CLI (TS)                  tmux / claude
+클라이언트          app.create_session (app.py:237)       cardinal CLI (TS)                  tmux / claude
     │ POST ───────────▶│
     │                  │ pydantic SessionIn 검증
     │                  │  (role ∈ worker|master, match ∈ prefix|contains|regex|mention …)
@@ -141,7 +141,7 @@ POST /api/sessions
 
 단계별:
 
-1. **검증** (`app.py:94` `SessionIn`, `:54` `RouteIn`): 모르는 `match` 값이나 `role`은 여기서 422로 튕김.
+1. **검증** (`app.py:94` `SessionIn`, `:86` `RouteIn`): 모르는 `match` 값이나 `role`은 여기서 422로 튕김.
 2. **CLI 호출** (`cli.py:47` `Cli.new`): `cardinal new <이름> --role <role> [--prompt …] --json [-- claude 인자]`.
    - `asyncio.create_subprocess_exec`로 부름 (셸 안 거침). 종료 코드가 0이 아니면 stderr의 `cardinal: …` 메시지를 `CliError`로 → HTTP 400.
    - CLI 쪽 동작은 [세션 시스템](session-system.md#세션-만들기) 그대로: 고정 작업 폴더, `--session-id` 미리 지정, 훅 `--settings` 주입, 역할 프롬프트 (외부 이벤트면 `cardinal reply`로 답하라는 안내 포함).
@@ -205,8 +205,8 @@ claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/
 | 입구 | 코드 | 만드는 것 |
 | --- | --- | --- |
 | 디스코드 메시지 | `discord_adapter.py:41` `on_message` | `InboundMessage(platform="discord", …)` |
-| `POST /api/channel/inbound` | `app.py:316` | `InboundMessage(platform="local", …)` |
-| `/ws/channel`에 `{"type":"message",…}` | `app.py:384` | `InboundMessage(platform="local", …)`, 첨부는 base64 |
+| `POST /api/channel/inbound` | `app.py:321` | `InboundMessage(platform="local", …)` |
+| `/ws/channel`에 `{"type":"message",…}` | `app.py:389` | `InboundMessage(platform="local", …)`, 첨부는 base64 |
 
 디스코드 어댑터가 채우는 값:
 
@@ -287,8 +287,8 @@ InboundMessage
    첫 줄의 `[cardinal:event <ID>]`가 약속된 표시. 세션 시스템 프롬프트에 "이걸로 시작하면 외부 이벤트고, 답은 `cardinal reply`로만 전달된다"가 들어 있음.
 3. **`pending` 기록**: `deliveries`에 `pending` 행을 먼저 넣고 `/ws/channel`에 `{"type":"delivery", …, "status":"pending"}` 푸시.
 4. **세션 락** (서버 안): 세션마다 `asyncio.Lock` 하나. 같은 세션에 가는 전달은 하나씩. `auto_reply`면 답장까지 끝나야 다음 이벤트로 넘어감.
-5. **보내기** (`cli.py:56` `Cli.send`): `cardinal send <이름> - --queue-timeout 600 --json`, 텍스트는 **stdin으로** 넘김 (인자로 넘기면 `-`로 시작하는 본문을 옵션으로 오해함).
-   - CLI 안에서 ([세션 시스템 send](session-system.md#send)): 세션 파일 락 → `busy`면 idle 대기 → `waiting`이면 거부 → 붙여넣기 → 200ms → `Enter` → 훅 상태가 바뀌는지(받았는지) 확인 (`src/session.ts:312-358`).
+5. **보내기** (`cli.py:61` `Cli.send`): `cardinal send <이름> - --queue-timeout 600 --json`, 텍스트는 **stdin으로** 넘김 (인자로 넘기면 `-`로 시작하는 본문을 옵션으로 오해함).
+   - CLI 안에서 ([세션 시스템 send](session-system.md#send)): 세션 파일 락 → `busy`면 idle 대기 → `waiting`이면 거부 → 붙여넣기 → 200ms → `Enter` → 훅 상태가 바뀌는지(받았는지) 확인 (`src/session.ts:352-400`).
    - 서버 쪽 subprocess 타임아웃은 idle 대기를 감안해서 `600 + 30`초.
 6. **결과 기록**: claude가 받았으면(`accepted`) `sent`, 못 받았거나 CLI 에러면 `failed` + 사유로 같은 행을 갱신.
 7. `/ws/channel`에 `{"type":"delivery", event_id, session, status}` 푸시.
@@ -306,7 +306,7 @@ claude 입장에서 이 텍스트는 **붙여넣기(paste)로 들어온 입력**
    │ cardinal reply evt_… "…" --file a.png
    │────────────────────────────▶│ 1. 텍스트/파일 검사
    │                             │ 2. 서버 주소 찾기
-   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:323)
+   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:328)
    │                             │                                             │  UploadFile → OutboundFile
    │                             │                                             │ router.reply (router.py:203)
    │                             │                                             │  이벤트 조회 → 어댑터 고르기
@@ -325,7 +325,7 @@ CLI 쪽 (`src/reply.ts`):
 
 서버 쪽:
 
-4. **엔드포인트** (`app.py:323`): 폼 필드를 받아 `UploadFile`을 바이트로 읽어 `OutboundFile(filename, data, content_type)`로. 서버에서도 한 번 더 검사: 텍스트·파일 둘 다 없으면 400, 파일 11개 이상이나 10MB 초과면 413 (CLI를 안 거치고 API를 직접 불러도 막히게).
+4. **엔드포인트** (`app.py:328`): 폼 필드를 받아 `UploadFile`을 바이트로 읽어 `OutboundFile(filename, data, content_type)`로. 서버에서도 한 번 더 검사: 텍스트·파일 둘 다 없으면 400, 파일 11개 이상이나 10MB 초과면 413 (CLI를 안 거치고 API를 직접 불러도 막히게).
 5. **`router.reply`** (`router.py:203`):
    - `channel_events`에서 이벤트 조회. 없으면 `LookupError` → **404**.
    - 이벤트의 `platform`으로 어댑터 선택. 그 플랫폼이 연결 안 돼 있으면 (예: 디스코드 이벤트인데 토큰 없이 재시작) 실패.
@@ -386,7 +386,7 @@ _deliver (세션 락 잡은 채로)
 
 ## 9. 흐름 F: 웹 터미널 / 상태 푸시
 
-### 웹 터미널 `/ws/term/<이름>` (`app.py:347` → `terminal.py:17`)
+### 웹 터미널 `/ws/term/<이름>` (`app.py:352` → `terminal.py:17`)
 
 1. 토큰 검사 → DB에서 이름으로 세션 찾기. 없거나 `alive=0`이면 `4404`로 닫음.
 2. `ptyprocess`로 pty를 만들고 그 안에서 `tmux attach-session -t =<tmux이름>` (관전 모드면 `-r -f ignore-size`).
@@ -409,8 +409,8 @@ _deliver (세션 락 잡은 채로)
 
 ### 인증
 
-- HTTP: 모든 라우트에 `Depends(auth)` (`app.py:192`). `?token=` 또는 `Authorization: Bearer`. 틀리면 401.
-- WS: `ws_auth` (`app.py:196`)가 accept 전에 검사, 틀리면 `4401`로 닫음.
+- HTTP: 모든 라우트에 `Depends(auth)` (`app.py:194`). `?token=` 또는 `Authorization: Bearer`. 틀리면 401.
+- WS: `ws_auth` (`app.py:198`)가 accept 전에 검사, 틀리면 `4401`로 닫음.
 - `CARDINAL_TOKEN`이 없으면 전부 통과 (기본 바인딩이 127.0.0.1이라).
 - uvicorn 로그(`uvicorn.access`, `uvicorn.error`)에 찍히는 `?token=xxx`는 `token=***`로 가림 (`_RedactToken` 필터, 서버 기동 때 붙임). 웹 페이지가 쿼리로 토큰을 써서 그대로 두면 로그에 남았음.
 
@@ -498,6 +498,7 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 | 느린 웹소켓 구독자 | `Hub.publish` | 2초 넘으면 그 구독자만 끊음 |
 | 라우트는 맞는데 세션이 `waiting` | `_deliver` | 전달 안 함, `deliveries.failed` "세션 상태 waiting" |
 | 라우트는 맞는데 세션이 `starting` | `_deliver` → CLI | idle 될 때까지 `pending`으로 기다렸다가 전달 |
+| 세션이 작업 폴더 신뢰 다이얼로그에 걸림 | CLI `send` | 기다리지 않고 바로 `failed` + "작업 폴더 신뢰 다이얼로그 대기 …" (만들 때 `trust: true`면 자동 수락) |
 | 라우트는 맞는데 세션이 죽음 | `active_routes` | 애초에 후보에서 빠짐 (전달 기록도 없음) |
 | 첨부 25MB 초과 / 다운로드 실패 | `_save_attachments` | 그 파일만 `error`, 전달은 계속 |
 | `reply`에 모르는 이벤트 ID | `router.reply` | 404, CLI exit 1 |
@@ -524,7 +525,7 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 | --- | --- | --- |
 | GET | `/` | `static/index.html` |
 | GET | `/api/sessions[?all=true]` | DB (`all`이면 삭제된 것도) |
-| POST | `/api/sessions` | 흐름 A |
+| POST | `/api/sessions` | 흐름 A. `{name, role, prompt, args, routes, cwd, trust}` — `cwd`는 절대 경로만 (아니면 400), `trust`는 신뢰 다이얼로그 자동 수락 |
 | GET | `/api/sessions/<이름>` | DB + 라우트 |
 | DELETE | `/api/sessions/<이름>[?purge=true]` | `cardinal kill` → 즉시 sync |
 | POST | `/api/sessions/<이름>/send` | `cardinal send - [--wait]` `{text, wait, timeout_s, submit, force, now}`. 기본은 idle 대기, `now`면 바로 |

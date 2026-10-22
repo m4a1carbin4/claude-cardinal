@@ -95,6 +95,8 @@ class SessionIn(BaseModel):
     name: str
     role: Literal["worker", "master"] = "worker"
     prompt: str | None = None
+    cwd: str | None = None  # 세션 작업 폴더 (절대 경로). 없으면 고정 워크스페이스
+    trust: bool = False  # 작업 폴더 신뢰 다이얼로그 자동 수락
     args: list[str] = Field(default_factory=list)
     routes: list[RouteIn] = Field(default_factory=list)
 
@@ -233,8 +235,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/sessions", status_code=201, dependencies=api)
     async def create_session(body: SessionIn):
+        # 상대 경로는 서버 프로세스 위치 기준이 돼서 헷갈리니 절대 경로만
+        if body.cwd and not os.path.isabs(body.cwd):
+            raise HTTPException(400, f"cwd 는 절대 경로여야 함: {body.cwd}")
         try:
-            st = await cli.new(body.name, body.role, body.prompt, body.args)
+            st = await cli.new(body.name, body.role, body.prompt, body.args, cwd=body.cwd, trust=body.trust)
         except CliError as e:
             raise cli_call(e)
         await ingestor.sync()

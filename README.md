@@ -85,7 +85,8 @@ ln -s "$PWD/bin/cardinal" ~/.local/bin/cardinal   # 선택. PATH 어딘가에
 ### 세션 굴리기
 
 ```sh
-cardinal new w1                                  # 워커 하나 띄우기
+cardinal new w1                                  # 워커 하나 띄우기 (기본 작업 폴더)
+cardinal new w4 --cwd ~/repo/app --trust         # 작업 폴더 지정 (처음 쓰는 폴더면 --trust)
 cardinal new boss --role master                  # 마스터
 cardinal new w2 --prompt "테스트 돌려봐" --wait   # 첫 지시 주고 끝날 때까지 대기
 cardinal new w3 -- --model sonnet               # -- 뒤는 claude 인자 그대로
@@ -100,13 +101,13 @@ cardinal attach w1                               # tmux로 직접 붙기
 cardinal kill w1 --purge
 ```
 
-세션은 전부 고정 작업 폴더 하나에서 돔: `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`).
-그래서 트랜스크립트 경로가 세션 ID만으로 정해짐.
+작업 폴더는 기본이 고정 워크스페이스 `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`), `--cwd`로 세션마다 바꿀 수 있음.
+기록(meta, 훅)은 작업 폴더와 상관없이 항상 `~/.cardinal` 아래.
 
 상태는 Claude Code 훅으로 찍음: `starting → idle ⇄ busy`, 승인 기다리면 `waiting`, 꺼지면 `ended`.
 기록: `~/.cardinal/sessions/<이름>/meta.json` (이름 ↔ 세션 고유 키) + `~/.cardinal/hooks/<고유 키>/` (훅 전용 폴더: `state.json`, `events.jsonl`).
 
-작업 폴더 처음 쓸 땐 신뢰 다이얼로그가 떠서 `starting`에 멈춤 → `cardinal keys <이름> Down Enter` 한 번이면 이후론 안 뜸.
+처음 쓰는 작업 폴더는 신뢰 다이얼로그가 뜸 → `--trust`로 만들거나 `cardinal keys <이름> Down Enter`. 다이얼로그에 걸려 있으면 `send`/`wait`가 바로 알려줌.
 
 ### 서버 (웹, DB, 메시지 채널)
 

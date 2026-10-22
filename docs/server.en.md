@@ -80,7 +80,7 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # with the Discord channel
 
 ## 3. Server startup sequence
 
-`create_app()` in `app.py` builds the objects; `lifespan()` (`app.py:148`) starts and stops them.
+`create_app()` in `app.py` builds the objects; `lifespan()` (`app.py:150`) starts and stops them.
 
 ```
 Pre-start check (`__main__.py` → `running.py` `precheck`)
@@ -125,7 +125,7 @@ POST /api/sessions
 ```
 
 ```
-client              app.create_session (app.py:235)       cardinal CLI (TS)                  tmux / claude
+client              app.create_session (app.py:237)       cardinal CLI (TS)                  tmux / claude
     │ POST ───────────▶│
     │                  │ validate pydantic SessionIn
     │                  │  (role ∈ worker|master, match ∈ prefix|contains|regex|mention …)
@@ -141,7 +141,7 @@ client              app.create_session (app.py:235)       cardinal CLI (TS)     
 
 Step by step:
 
-1. **Validation** (`SessionIn` at `app.py:94`, `RouteIn` at `:54`): unknown `match` or `role` values are rejected here with 422.
+1. **Validation** (`SessionIn` at `app.py:94`, `RouteIn` at `:86`): unknown `match` or `role` values are rejected here with 422.
 2. **CLI call** (`Cli.new`, `cli.py:47`): `cardinal new <name> --role <role> [--prompt …] --json [-- claude args]`.
    - Run with `asyncio.create_subprocess_exec` (no shell). A non-zero exit turns the stderr `cardinal: …` message into a `CliError` → HTTP 400.
    - What the CLI does is as in [session system](session-system.en.md#creating-a-session): fixed workspace, pre-assigned `--session-id`, hooks via `--settings`, role prompt (including "reply to external events with `cardinal reply`").
@@ -205,8 +205,8 @@ Actual offsets after testing: `helper` read up to 3668 bytes, `auto` up to 733 b
 | Entry | Code | Produces |
 | --- | --- | --- |
 | Discord message | `on_message`, `discord_adapter.py:41` | `InboundMessage(platform="discord", …)` |
-| `POST /api/channel/inbound` | `app.py:316` | `InboundMessage(platform="local", …)` |
-| `{"type":"message",…}` on `/ws/channel` | `app.py:384` | `InboundMessage(platform="local", …)`, attachments as base64 |
+| `POST /api/channel/inbound` | `app.py:321` | `InboundMessage(platform="local", …)` |
+| `{"type":"message",…}` on `/ws/channel` | `app.py:389` | `InboundMessage(platform="local", …)`, attachments as base64 |
 
 What the Discord adapter fills in:
 
@@ -287,8 +287,8 @@ Matching is case-sensitive.
    The leading `[cardinal:event <ID>]` is the agreed marker. The session system prompt says messages starting with it are external events and only `cardinal reply` reaches the channel.
 3. **Record `pending`**: insert a `pending` row in `deliveries` and push `{"type":"delivery", …, "status":"pending"}` on `/ws/channel`.
 4. **Session lock** (in the server): one `asyncio.Lock` per session. Deliveries to the same session go one at a time; with `auto_reply` the next event waits until the reply is done.
-5. **Send** (`Cli.send`, `cli.py:56`): `cardinal send <name> - --queue-timeout 600 --json`, with the text **on stdin** (as an argument, a body starting with `-` would be parsed as an option).
-   - Inside the CLI ([session system send](session-system.en.md#send)): session file lock → wait for idle if `busy` → refuse if `waiting` → paste → 200ms → `Enter` → confirm the hook state changed (received) (`src/session.ts:312-358`).
+5. **Send** (`Cli.send`, `cli.py:61`): `cardinal send <name> - --queue-timeout 600 --json`, with the text **on stdin** (as an argument, a body starting with `-` would be parsed as an option).
+   - Inside the CLI ([session system send](session-system.en.md#send)): session file lock → wait for idle if `busy` → refuse if `waiting` → paste → 200ms → `Enter` → confirm the hook state changed (received) (`src/session.ts:352-400`).
    - The server's subprocess timeout allows for the idle wait: `600 + 30`s.
 6. **Record the result**: update the same row to `sent` if claude received it (`accepted`), or `failed` with a reason otherwise / on CLI error.
 7. Push `{"type":"delivery", event_id, session, status}` on `/ws/channel`.
@@ -306,7 +306,7 @@ claude in a session (Bash tool)     cardinal CLI (src/reply.ts)                 
    │ cardinal reply evt_… "…" --file a.png
    │────────────────────────────▶│ 1. validate text/files
    │                             │ 2. find the server
-   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:323)
+   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:328)
    │                             │                                             │  UploadFile → OutboundFile
    │                             │                                             │ router.reply (router.py:203)
    │                             │                                             │  look up event → pick adapter
@@ -325,7 +325,7 @@ CLI side (`src/reply.ts`):
 
 Server side:
 
-4. **Endpoint** (`app.py:323`): reads the form fields and turns each `UploadFile` into `OutboundFile(filename, data, content_type)`. The server checks again: no text and no files → 400; more than 10 files or a file over 10MB → 413 (so calling the API directly, bypassing the CLI, is also limited).
+4. **Endpoint** (`app.py:328`): reads the form fields and turns each `UploadFile` into `OutboundFile(filename, data, content_type)`. The server checks again: no text and no files → 400; more than 10 files or a file over 10MB → 413 (so calling the API directly, bypassing the CLI, is also limited).
 5. **`router.reply`** (`router.py:203`):
    - Look up the event in `channel_events`. Missing → `LookupError` → **404**.
    - Pick the adapter by the event's `platform`. Fails if that platform isn't connected (e.g. a Discord event after restarting without a token).
@@ -386,7 +386,7 @@ Real record (`auto` session, `contains "auto"`):
 
 ## 9. Flow F: web terminal / status push
 
-### Web terminal `/ws/term/<name>` (`app.py:347` → `terminal.py:17`)
+### Web terminal `/ws/term/<name>` (`app.py:352` → `terminal.py:17`)
 
 1. Check the token → find the session by name in the DB. Missing or `alive=0` → close with `4404`.
 2. Create a pty with `ptyprocess` and run `tmux attach-session -t =<tmux name>` in it (spectator mode adds `-r -f ignore-size`).
@@ -409,8 +409,8 @@ The mechanism (two ptys, xterm.js, control codes) is in [web-terminal.en.md](web
 
 ### Auth
 
-- HTTP: `Depends(auth)` on every route (`app.py:192`). `?token=` or `Authorization: Bearer`; otherwise 401.
-- WS: `ws_auth` (`app.py:196`) checks before accept and closes with `4401` on failure.
+- HTTP: `Depends(auth)` on every route (`app.py:194`). `?token=` or `Authorization: Bearer`; otherwise 401.
+- WS: `ws_auth` (`app.py:198`) checks before accept and closes with `4401` on failure.
 - Without `CARDINAL_TOKEN` everything passes (the default bind is 127.0.0.1).
 - `?token=xxx` in uvicorn logs (`uvicorn.access`, `uvicorn.error`) is masked as `token=***` (`_RedactToken` filter, attached at startup). The web page passes the token in the query, so it used to end up in logs.
 
@@ -498,6 +498,7 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 | Slow WebSocket subscriber | `Hub.publish` | dropped after 2s; others unaffected |
 | Route matches but session is `waiting` | `_deliver` | not sent, `deliveries.failed` "세션 상태 waiting" |
 | Route matches but session is `starting` | `_deliver` → CLI | waits as `pending` until idle, then delivered |
+| Session stuck on the working-dir trust dialog | CLI `send` | fails at once with "작업 폴더 신뢰 다이얼로그 대기 …" instead of waiting (`trust: true` at creation auto-accepts) |
 | Route matches but session is dead | `active_routes` | excluded from candidates (no delivery record either) |
 | Attachment over 25MB / download failure | `_save_attachments` | only that file gets `error`; delivery continues |
 | `reply` with an unknown event ID | `router.reply` | 404, CLI exits 1 |
@@ -524,7 +525,7 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 | --- | --- | --- |
 | GET | `/` | `static/index.html` |
 | GET | `/api/sessions[?all=true]` | DB (`all` includes deleted) |
-| POST | `/api/sessions` | Flow A |
+| POST | `/api/sessions` | Flow A. `{name, role, prompt, args, routes, cwd, trust}`; `cwd` must be absolute (else 400), `trust` auto-accepts the trust dialog |
 | GET | `/api/sessions/<name>` | DB + routes |
 | DELETE | `/api/sessions/<name>[?purge=true]` | `cardinal kill` → immediate sync |
 | POST | `/api/sessions/<name>/send` | `cardinal send - [--wait]` `{text, wait, timeout_s, submit, force, now}`; waits for idle by default, `now` sends immediately |

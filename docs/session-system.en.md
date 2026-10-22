@@ -41,7 +41,7 @@ The CLI talks to tmux and the state files directly; no server needed. The server
 
 `cardinal new <name>` does roughly this:
 
-0. The working directory is always fixed: `$CARDINAL_WORKSPACE` (default `~/.cardinal/workspace`). Created if missing, used by its realpath.
+0. Working directory: by default the fixed workspace `$CARDINAL_WORKSPACE` (default `~/.cardinal/workspace`, created if missing). With `--cwd <path>`, that folder (must be an existing directory; relative paths resolve from the caller's location). Either way its realpath is recorded as `cwd` in `meta.json`. The path is validated **before** step 3 removes old records, so a bad path leaves the old records of that name intact.
 1. Validate the name (`[A-Za-z0-9][A-Za-z0-9_-]{0,47}`).
    Every later step runs inside a **per-name create lock** (`sessions/.create-<name>.lock`, waits up to 30s), so creations of the same name go one at a time.
    - Inside the lock, check the current session list: a live session with that name → `이미 있는 세션: <name> (<state>)`; a tmux session of that name without Cardinal records → `이미 있는 tmux 세션`. A name with only a dead session's records is re-created.
@@ -63,12 +63,20 @@ If the tmux launch in step 4 fails, the `meta.json` and hook dir from step 3 are
 
 When claude exits, the tmux session goes away with it.
 
-### Why a fixed workspace
+### Working directory and record locations
 
-claude writes transcripts to `~/.claude/projects/<workspace path with every non-alphanumeric char replaced by '-'>/<session ID>.jsonl`
-(under `CLAUDE_CONFIG_DIR` if set). Since the workspace is fixed and Cardinal picks the session ID,
-the transcript path can be computed directly, without hooks (`transcriptPath()` in `src/paths.ts`), even after the session is gone.
-As a bonus, the trust dialog only has to be accepted once for that folder.
+- **Record locations are always fixed**: `meta.json` (`$CARDINAL_HOME/sessions/<name>/`) and the hook dir (`$CARDINAL_HOME/hooks/<instanceId>/`) don't depend on the working directory, and they're all the server looks at. No Cardinal files are created in the working directory.
+- **The working directory is per session**: the fixed workspace by default, changeable with `--cwd` (API: `cwd`, absolute paths only).
+- claude writes transcripts to `~/.claude/projects/<working dir path with every non-alphanumeric char replaced by '-'>/<session ID>.jsonl` (under `CLAUDE_CONFIG_DIR` if set). Cardinal computes this from `meta.json`'s `cwd` (realpath) and the current session ID reported by hooks (`transcriptPath()` in `src/paths.ts`), so it works with per-session folders, symlinked paths like `/tmp`, and after the session is gone.
+
+### Trust dialog (first use of a working directory)
+
+claude shows a "do you trust this folder" dialog in a folder it hasn't seen. Until it's accepted the session stays `starting`.
+
+- **Detection**: when the state is `starting`, the screen is checked for that dialog → `trustPrompt: true` + detail `작업 폴더 신뢰 다이얼로그 대기 (<path>) — cardinal keys <name> Down Enter`.
+- **No waiting**: only a human (or `--trust`) can clear it, so `new --wait`/`wait` return right away (`new --wait` exits 1 with a hint) and `send` is rejected immediately. Server deliveries fail at once with the reason instead of sitting `pending` for 600s.
+- **`--trust`** (API `trust: true`): if the dialog appears during creation, choose "Yes, I trust this folder" (waits up to 20s, inside the create lock). Only when explicitly given.
+- Once trusted, claude remembers the folder. The default workspace also shows it once on first use.
 
 ### Hook injection
 
@@ -223,7 +231,7 @@ Reporting mid-turn gives the partial reply so far, marked as still in progress. 
 ## CLI
 
 ```
-cardinal new <name> [--role worker|master] [--prompt TEXT] [--wait] [-- claude args...]
+cardinal new <name> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [-- claude args...]
 cardinal ls [--json]
 cardinal status <name> [--json]
 cardinal send <name> <text|-> [--wait] [--timeout SEC] [--no-enter] [--force]
@@ -253,7 +261,7 @@ HTTP/WebSocket, the DB and the message channel moved to a Python service → [se
 
 ## Known issues / TODO
 
-- The first use of the workspace stops at `starting` on the trust dialog → `cardinal keys <name> Down Enter` once. It won't appear again.
+- First use of a working directory stops at `starting` on the trust dialog → detected and reported right away. Create with `--trust` or run `cardinal keys <name> Down Enter` ([trust dialog](#trust-dialog-first-use-of-a-working-directory)).
 - `waiting` hasn't been observed for real (test sessions ran in auto mode, so no permission prompts).
 - The stray `PreToolUse` after `Stop` is now ignored, but its source is still unknown. Trace it via `promptId` in `events.jsonl`.
 - `cardinal kill` only kills tmux and returns immediately; the `SessionEnd` hook (reason `other`) fires later. Cardinal also writes `ended` itself.

@@ -44,10 +44,15 @@ class Cli:
 
     # 자주 쓰는 것들
 
-    async def new(self, name: str, role: str = "worker", prompt: str | None = None, claude_args: list[str] | None = None):
+    async def new(self, name: str, role: str = "worker", prompt: str | None = None, claude_args: list[str] | None = None,
+                  cwd: str | None = None, trust: bool = False):
         args = ["new", name, "--role", role]
         if prompt:
             args += ["--prompt", prompt]
+        if cwd:
+            args += ["--cwd", cwd]
+        if trust:
+            args.append("--trust")
         args += ["--json"]
         if claude_args:
             args += ["--", *claude_args]

@@ -59,6 +59,7 @@ const COMMON_PROMPT = (name: string, role: Role) => `
 const MASTER_PROMPT = `
 너는 마스터 세션이다. 작업을 나눌 때는 Claude Code 내장 서브 에이전트(Agent/Task 도구)나 워크플로 대신
 \`cardinal new <이름> --prompt "<지시>" --wait\` 로 독립 워커 세션을 띄워서 맡겨라.
+특정 저장소/폴더에서 일해야 하면 \`--cwd <경로>\` (처음 쓰는 폴더면 \`--trust\` 도 같이).
 사용자가 서브 에이전트를 쓰라고 따로 요청한 경우에만 예외.
 - 지시 추가: \`cardinal send <이름> "<메시지>" --wait\` (마지막 응답이 출력됨)
 - 상태 확인: \`cardinal ls\`, \`cardinal status <이름>\`
@@ -72,6 +73,41 @@ export interface CreateOptions {
   role?: Role;
   prompt?: string;
   claudeArgs?: string[];
+  cwd?: string; // 세션 작업 폴더. 없으면 고정 워크스페이스. 훅/기록 위치(CARDINAL_HOME)와는 무관
+  trust?: boolean; // 작업 폴더 신뢰 다이얼로그가 뜨면 자동으로 수락 (명시적으로 줄 때만)
+}
+
+// 처음 쓰는 폴더에서 claude 가 띄우는 "이 폴더를 신뢰하냐" 다이얼로그
+const TRUST_PROMPT_RE = /trust this folder/i;
+const TRUST_WAIT_MS = 20_000;
+
+// 작업 폴더 결정. 기록을 지우기 전에 검사해야 잘못된 경로 때문에 이전 세션 기록이 날아가지 않음.
+// claude 는 실제 경로(realpath)로 트랜스크립트 폴더를 만드니까 그걸로 기록 (macOS /tmp → /private/tmp 등)
+function resolveCwd(cwd?: string): string {
+  if (!cwd) {
+    fs.mkdirSync(WORKSPACE, { recursive: true });
+    return fs.realpathSync(WORKSPACE);
+  }
+  const abs = path.resolve(cwd);
+  if (!fs.statSync(abs, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`작업 폴더가 없거나 디렉터리가 아님: ${abs}`);
+  return fs.realpathSync(abs);
+}
+
+// --trust: 신뢰 다이얼로그가 뜨면 "Yes, I trust this folder" 로 넘김. 안 뜨고 바로 준비되면 그냥 끝
+async function acceptTrust(name: string, t: string): Promise<boolean> {
+  const deadline = Date.now() + TRUST_WAIT_MS;
+  while (Date.now() < deadline) {
+    const st = await getStatus(name);
+    if (!st.alive || st.state !== 'starting') return false;
+    if (st.trustPrompt) {
+      await tmux.sendKeys(t, 'Down');
+      await sleep(300);
+      await tmux.sendKeys(t, 'Enter');
+      return true;
+    }
+    await sleep(300);
+  }
+  return false;
 }
 
 const CREATE_LOCK_TIMEOUT_MS = 30_000;
@@ -101,9 +137,7 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
   await assertNameFree(name);
 
   const role = opts.role ?? 'worker';
-  // 전부 고정 작업 폴더에서 돌림. macOS /tmp → /private/tmp 같은 심링크는 claude가 실제 경로로 쓰니까 맞춰줌
-  fs.mkdirSync(WORKSPACE, { recursive: true });
-  const cwd = fs.realpathSync(WORKSPACE);
+  const cwd = resolveCwd(opts.cwd);
 
   const instanceId = randomUUID();
   const hdir = hookDir(instanceId);
@@ -157,6 +191,7 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
   }
   // 웹/터미널 여러 군데서 붙어도 가장 최근에 만진 클라이언트 크기 따라가게
   await tmux.setOption(t, 'window-size', 'latest').catch(() => {});
+  if (opts.trust) await acceptTrust(name, t);
 
   return meta;
 }
@@ -166,6 +201,7 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
 export interface SessionStatus extends SessionMeta {
   currentClaudeSessionId: string; // /clear 뒤엔 meta.claudeSessionId 와 다름
   alive: boolean;
+  trustPrompt?: boolean; // starting 인데 신뢰 다이얼로그가 떠 있음 (사람이나 --trust 가 넘겨야 함)
   state: SessionState;
   stateAt?: string;
   event?: string;
@@ -198,15 +234,19 @@ export async function getStatus(name: string): Promise<SessionStatus> {
   if (!meta) throw new Error(`모르는 세션: ${name}`);
   const alive = await tmux.hasSession(meta.tmux);
   const s = alive ? applyInterrupt(meta, readState(stateDir(meta))) : readState(stateDir(meta));
+  // 아직 준비 전이면 신뢰 다이얼로그에 걸려 있는지 화면으로 확인 (starting 일 때만 봐서 비용 작음)
+  const state = alive ? (s?.state ?? 'starting') : 'ended';
+  const trustPrompt = state === 'starting' && TRUST_PROMPT_RE.test(await tmux.capturePane(meta.tmux).catch(() => ''));
   return {
     ...meta,
     currentClaudeSessionId: s?.claudeSessionId ?? meta.claudeSessionId,
     alive,
     // tmux가 죽었으면 훅이 못 찍었어도 ended로 봄
-    state: alive ? (s?.state ?? 'starting') : 'ended',
+    state,
+    trustPrompt: trustPrompt || undefined,
     stateAt: s?.at,
     event: s?.event,
-    detail: s?.detail,
+    detail: trustPrompt ? `작업 폴더 신뢰 다이얼로그 대기 (${meta.cwd}) — cardinal keys ${name} Down Enter` : s?.detail,
     tool: s?.tool,
   };
 }
@@ -330,6 +370,8 @@ export async function send(name: string, text: string, opts: SendOptions = {}): 
       st = await wait(name, { timeoutMs: Math.max(1, deadline - Date.now()) });
     }
     if (!st.alive || st.state === 'ended') throw new Error(`세션 안 살아있음: ${name}`);
+    // 신뢰 다이얼로그에 텍스트를 넣으면 다이얼로그 선택으로 먹힘. 600초 기다리지 말고 바로 알림
+    if (st.trustPrompt) throw new Error(`${name}: ${st.detail}`);
     if (st.state === 'waiting' && !opts.force)
       throw new Error(`${name} 은(는) 승인 대기 중이라 메시지가 다이얼로그에 들어감. \`cardinal keys\`로 처리하거나 --force`);
 
@@ -404,6 +446,8 @@ export async function wait(name: string, opts: WaitOptions = {}): Promise<Sessio
   const deadline = opts.timeoutMs ? Date.now() + opts.timeoutMs : Infinity;
   for (;;) {
     const st = await getStatus(name);
+    // 신뢰 다이얼로그는 사람(또는 --trust)이 넘겨야 풀림. 기다려봐야 소용없으니 바로 돌려줌
+    if (st.trustPrompt) return st;
     const fresh = !opts.since || (st.stateAt && Date.parse(st.stateAt) >= opts.since) || st.state === 'ended';
     if (fresh && until.includes(st.state) && (!opts.accept || opts.accept(st))) return st;
     if (Date.now() > deadline) throw Object.assign(new Error(`대기 시간 초과: ${name} (${st.state})`), { status: st });

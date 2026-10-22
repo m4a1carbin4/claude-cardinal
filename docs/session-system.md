@@ -41,7 +41,7 @@ CLI는 서버 없이 tmux랑 파일만 직접 만짐. 서버(`server/`, Python)�
 
 `cardinal new <이름>` 하면 대충 이렇게 돌아감:
 
-0. 작업 폴더는 항상 고정: `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`). 없으면 만들고 실제 경로(realpath)로 씀.
+0. 작업 폴더: 기본은 고정 워크스페이스 `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`, 없으면 만듦). `--cwd <경로>`를 주면 그 폴더 (있는 디렉터리여야 함, 상대 경로는 호출한 위치 기준). 어느 쪽이든 실제 경로(realpath)로 `meta.json`의 `cwd`에 기록. 경로 검사는 아래 3번에서 예전 기록을 지우기 **전에** 해서, 잘못된 경로를 줘도 같은 이름의 예전 기록은 그대로 남음.
 1. 이름 검사 (`[A-Za-z0-9][A-Za-z0-9_-]{0,47}`).
    이후 단계는 전부 **이름별 생성 락**(`sessions/.create-<이름>.lock`, 최대 30초 대기) 안에서 함. 같은 이름 생성은 한 번에 하나씩.
    - 락 안에서 지금 세션 목록을 봄: 같은 이름이 살아 있으면 `이미 있는 세션: <이름> (<상태>)`, 카디널 기록 없이 같은 이름 tmux 세션만 있어도 `이미 있는 tmux 세션`으로 거부. 죽은 세션 기록만 남은 이름은 새로 만듦.
@@ -63,12 +63,20 @@ CLI는 서버 없이 tmux랑 파일만 직접 만짐. 서버(`server/`, Python)�
 
 claude가 종료되면 tmux 세션도 같이 사라짐.
 
-### 왜 작업 폴더를 고정하나
+### 작업 폴더와 기록 위치
 
-claude는 트랜스크립트를 `~/.claude/projects/<작업 폴더 경로에서 영숫자 아닌 건 전부 '-'>/<세션 ID>.jsonl` 에 씀
-(`CLAUDE_CONFIG_DIR` 쓰면 그 아래). 작업 폴더가 하나로 고정돼 있고 세션 ID는 카디널이 정해서 넘기니까,
-트랜스크립트 경로를 훅 없이도 바로 계산할 수 있음 (`transcriptPath()` in `src/paths.ts`). 세션이 죽은 뒤에도 마찬가지.
-덤으로 신뢰 다이얼로그도 이 폴더에서 한 번만 받으면 끝.
+- **기록 위치는 항상 고정**: `meta.json`(`$CARDINAL_HOME/sessions/<이름>/`)과 훅 폴더(`$CARDINAL_HOME/hooks/<instanceId>/`)는 작업 폴더와 상관없음. 서버가 보는 위치도 이것뿐. 작업 폴더엔 카디널 파일이 하나도 안 생김.
+- **작업 폴더는 세션별**: 기본은 고정 워크스페이스, `--cwd`(API는 `cwd`, 절대 경로만)로 바꿀 수 있음.
+- claude는 트랜스크립트를 `~/.claude/projects/<작업 폴더 경로에서 영숫자 아닌 건 전부 '-'>/<세션 ID>.jsonl` 에 씀 (`CLAUDE_CONFIG_DIR` 쓰면 그 아래). 카디널은 `meta.json`의 `cwd`(실제 경로)와 훅이 알려준 지금 세션 ID로 이 경로를 계산함 (`transcriptPath()` in `src/paths.ts`). 그래서 작업 폴더가 세션마다 달라도, `/tmp` 같은 심볼릭 링크 경로를 줘도, 세션이 죽은 뒤에도 찾을 수 있음.
+
+### 신뢰 다이얼로그 (처음 쓰는 작업 폴더)
+
+claude는 처음 보는 폴더에서 "이 폴더를 신뢰하냐" 다이얼로그를 띄움. 넘기기 전까지 세션은 `starting`.
+
+- **감지**: 상태가 `starting`이면 화면에 그 다이얼로그가 떠 있는지 확인해서 `trustPrompt: true` + detail `작업 폴더 신뢰 다이얼로그 대기 (<경로>) — cardinal keys <이름> Down Enter`.
+- **기다리지 않음**: 사람(또는 `--trust`)이 넘겨야 풀리니까 `new --wait`/`wait`는 바로 돌아오고(`new --wait`는 안내와 함께 exit 1), `send`는 바로 거부함. 서버 전달도 600초 `pending` 대신 즉시 `failed` + 이유.
+- **`--trust`** (API `trust: true`): 만들 때 다이얼로그가 뜨면 "Yes, I trust this folder"로 넘김 (최대 20초 기다림, 생성 락 안에서). 명시적으로 줄 때만 동작.
+- 한 번 신뢰한 폴더는 claude가 기억해서 다음부턴 안 뜸. 기본 워크스페이스도 처음 한 번은 뜸.
 
 ### 훅 주입
 
@@ -223,7 +231,7 @@ assistant  text          ← 마지막 답 (stop_reason: end_turn)
 ## CLI
 
 ```
-cardinal new <이름> [--role worker|master] [--prompt TEXT] [--wait] [-- claude 인자...]
+cardinal new <이름> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [-- claude 인자...]
 cardinal ls [--json]
 cardinal status <이름> [--json]
 cardinal send <이름> <텍스트|-> [--wait] [--timeout 초] [--no-enter] [--force]
@@ -253,7 +261,7 @@ HTTP/웹소켓, DB, 메시지 채널은 Python 서비스로 분리됨 → [serve
 
 ## 알려진 문제 / 할 것
 
-- 작업 폴더를 처음 쓸 때 신뢰 다이얼로그 때문에 `starting`에서 멈춤 → `cardinal keys <이름> Down Enter` 한 번. 이후엔 안 뜸.
+- 작업 폴더를 처음 쓸 때 신뢰 다이얼로그 때문에 `starting`에서 멈춤 → 감지해서 바로 알려줌. `--trust`로 만들거나 `cardinal keys <이름> Down Enter` ([신뢰 다이얼로그](#신뢰-다이얼로그-처음-쓰는-작업-폴더)).
 - `waiting` 상태는 실제로 못 띄워봄 (테스트 세션이 auto mode라 승인 프롬프트가 안 뜸).
 - `Stop` 뒤 정체불명 `PreToolUse`는 막아뒀지만 정체는 아직 모름. `events.jsonl`의 `promptId`로 추적 가능.
 - `cardinal kill`은 tmux만 죽이고 바로 끝남. `SessionEnd` 훅(reason `other`)은 그 뒤에 늦게 뜸. 카디널도 `ended`를 직접 씀.
