@@ -166,17 +166,17 @@
   <div>
     <div class="eyebrow">CLAUDE CARDINAL · 현황 보고서</div>
     <h1>지금 무엇이 돌아가고, 무엇이 남았나</h1>
-    <div class="meta">기준 커밋 <code>092ef84</code> · 2026-10-22 · 검증은 실제 Claude Code 세션 + 스크래치 환경에서 직접 재현</div>
+    <div class="meta">기준 커밋 <code>566a48e</code> · 2026-10-23 · 검증은 실제 Claude Code 세션 + 스크래치 환경에서 직접 재현</div>
   </div>
 </header>
 
 <div class="stats">
-  <div class="stat"><div class="v">7</div><div class="k">커밋 (main)</div></div>
-  <div class="stat"><div class="v">2,974</div><div class="k">코드 줄 (TS 1,295 · Python 1,679)</div></div>
-  <div class="stat ok"><div class="v">29</div><div class="k">해결한 문제</div></div>
+  <div class="stat"><div class="v">10</div><div class="k">커밋 (main)</div></div>
+  <div class="stat"><div class="v">5,128</div><div class="k">코드 줄 (CLI 1,373 · 서버 1,770 · 웹 1,985)</div></div>
+  <div class="stat ok"><div class="v">33</div><div class="k">해결한 문제</div></div>
   <div class="stat ok"><div class="v">0</div><div class="k">남은 높음 · 중간 이슈</div></div>
-  <div class="stat"><div class="v">3</div><div class="k">남은 낮음 이슈</div></div>
-  <div class="stat mid"><div class="v">6</div><div class="k">미검증 / 기능 할 일</div></div>
+  <div class="stat"><div class="v">4</div><div class="k">남은 낮음 이슈</div></div>
+  <div class="stat mid"><div class="v">5</div><div class="k">미검증 / 기능 할 일</div></div>
 </div>
 
 <nav class="toc">
@@ -195,9 +195,9 @@
 <p class="lead">Claude Code 세션 여러 개를 tmux로 띄우고, 서로 일을 시키고, 디스코드 같은 외부 채널 메시지를 세션에 넘겨 답하게 하는 오케스트레이터.</p>
 
 <div class="card">
-  <p><strong>돌아가는 것</strong>: 세션 생성/제어/상태 확인 CLI (작업 폴더는 기본 고정, 세션별 지정 가능), 마스터가 워커를 띄워 일 시키기, 웹 터미널, 세션 기록 SQLite, 채널 라우팅(local 채널로 끝까지 검증), 세션 안 에이전트의 직접 답장(텍스트·파일), 자동 답장.</p>
-  <p><strong>최근 집중한 것</strong>: 동시성과 상태 판정. 같은 세션에 메시지가 겹치면 합쳐지던 문제, 같은 이름 세션 꼬임, 막 뜬 세션의 Enter 먹힘, Esc 중단 뒤 멈춤, 트랜스크립트 턴 오판을 실제로 재현하고 고침. 서버 중복 실행도 시작 전에 막음.</p>
-  <p><strong>남은 것</strong>: 높음·중간 이슈는 없음. 낮음 3건(동시 훅 덮어쓰기, Enter 3회 실패 시 입력창 잔여, 붙여넣기 감싸기)과, 디스코드 실제 봇 연동 등 미검증 항목. 한 번에 보낼 수 있는 텍스트가 16,000바이트인 건 tmux 제약이라 안내 사항으로 둠.</p>
+  <p><strong>돌아가는 것</strong>: 세션 생성/제어/상태 확인 CLI (작업 폴더는 기본 고정, 세션별 지정 가능), 마스터가 워커를 띄워 일 시키기 (워커는 마스터 작업 폴더를 물려받음), 서버 옵션을 전부 다루는 웹 UI와 웹 터미널, 세션 기록 SQLite, 채널 라우팅(local 채널로 끝까지 검증), 세션 안 에이전트의 직접 답장(텍스트·파일), 자동 답장.</p>
+  <p><strong>최근 집중한 것</strong>: 웹 UI(<code>web/</code>, Vite + React)로 서버 기능 전부를 화면에 올림. 응답 전에 Esc로 끊은 경우(트랜스크립트에 흔적이 없고 프롬프트가 입력창에 되돌아옴)를 화면으로 감지하고 다음 send 전에 입력창을 비움. 마스터가 만든 워커가 마스터와 같은 폴더에서 일하게 함. 그 전에는 동시성과 상태 판정(메시지 합쳐짐, 같은 이름 꼬임, Enter 먹힘, 턴 오판)을 재현하고 고침.</p>
+  <p><strong>남은 것</strong>: 높음·중간 이슈는 없음. 낮음 4건(동시 훅 덮어쓰기, Enter 3회 실패 시 입력창 잔여, 붙여넣기 감싸기, 재현 안 되는 초기 입력 합쳐짐 1건)과, 디스코드 실제 봇 연동 등 미검증 항목. 한 번에 보낼 수 있는 텍스트가 16,000바이트인 건 tmux 제약이라 안내 사항으로 둠.</p>
 </div>
 
 <!-- ───────────── 구조 ───────────── -->
@@ -219,7 +219,7 @@
 
     <rect class="box" x="210" y="20" width="170" height="54" rx="10" />
     <text class="t" x="295" y="44" text-anchor="middle">브라우저 / 외부</text>
-    <text class="s" x="295" y="62" text-anchor="middle">웹 터미널 · REST · WS</text>
+    <text class="s" x="295" y="62" text-anchor="middle">웹 UI · 웹 터미널 · REST · WS</text>
 
     <rect class="box" x="640" y="20" width="240" height="54" rx="10" />
     <text class="t" x="760" y="44" text-anchor="middle">사람 / 마스터 세션</text>
@@ -232,7 +232,7 @@
     <text class="s" x="36" y="178">· ingest: 파일 감시 → SQLite 수집</text>
     <text class="s" x="36" y="198">· terminal: /ws/term → pty 안의 tmux attach</text>
     <text class="s" x="36" y="218">· /api/health · 토큰 인증 · 로그 토큰 가림</text>
-    <text class="s" x="36" y="238">· local 채널 (HTTP/WS로 메시지 주입)</text>
+    <text class="s" x="36" y="238">· local 채널 (HTTP/WS 주입) · / 에서 web/dist 서빙</text>
 
     <rect class="box" x="20" y="300" width="200" height="54" rx="10" />
     <text class="t" x="120" y="324" text-anchor="middle">SQLite</text>
@@ -291,6 +291,7 @@
       <li>세션 고유 키(instanceId)마다 전용 훅 폴더</li>
       <li>같은 이름 동시 생성 → 이름별 락으로 하나만 성공</li>
       <li>tmux 실패 시 meta·훅 폴더 롤백</li>
+      <li>마스터 안에서 만들면 <code>--cwd</code> 없을 때 마스터 작업 폴더, <code>meta.parent</code> 기록</li>
     </ul>
     <div class="proof">확인: 같은 이름 5개 동시 → 1개 생성, 4개 거부 · 이름 재사용·<code>/clear</code>·purge 꼬임 없음 · 커스텀 폴더(상대 경로·<code>/tmp</code> 링크 포함)에서도 같은 회귀 테스트 통과</div>
   </div>
@@ -303,6 +304,7 @@
       <li>막 뜬 세션 1.5초 대기, Enter 최대 3회</li>
       <li><code>--wait</code>는 자기 턴의 답만 반환</li>
       <li>16,000바이트 넘는 텍스트는 tmux에 넘기기 전에 안내와 함께 거부</li>
+      <li>Esc로 되돌아온 입력창 글은 비우고 붙여넣음</li>
     </ul>
     <div class="proof">확인: 0~0.2초 간격 동시 send 분리 · 이벤트 2개 0.1초 간격 → 턴 2개 · 세션 4개 동시 + 이벤트 6개 2라운드 전부 정상</div>
   </div>
@@ -311,7 +313,7 @@
     <h3>상태 확인 · 결과 보고 <span class="badge b-ok">동작</span></h3>
     <ul>
       <li>훅 기반 상태: starting / idle / busy / waiting / ended</li>
-      <li>Esc 중단은 사람 개입으로: <code>idle</code> + <code>Interrupted</code>, 기다리던 쪽 즉시 종료</li>
+      <li>Esc 중단은 사람 개입으로: <code>idle</code> + <code>Interrupted</code>, 기다리던 쪽 즉시 종료. 응답 전 중단은 화면(“esc to” 사라짐)으로 감지</li>
       <li><code>report</code>: 살아있나 + 작업중/완료/중단 + 마지막 사람 턴 전체 응답</li>
       <li>파서: 사람 입력만 턴 (백그라운드 알림·명령 줄·요약 구분)</li>
     </ul>
@@ -323,8 +325,9 @@
     <ul>
       <li>마스터는 서브 에이전트 대신 독립 tmux 세션으로 일을 나눔</li>
       <li>CLI 절대경로를 시스템 프롬프트에 박음 (PATH 문제 해결)</li>
+      <li>워커는 기본으로 마스터 작업 폴더 (환경변수 + instanceId 확인), 웹·API로 만든 세션은 상속 안 함</li>
     </ul>
-    <div class="proof">확인: 마스터가 워커를 띄우고 → <code>report</code>로 전체 응답 회수 → kill</div>
+    <div class="proof">확인: 마스터가 워커를 띄우고 → <code>report</code>로 전체 응답 회수 → kill · 워커 <code>pwd</code> = 마스터 폴더, <code>--cwd</code> 우선, 틀린 instanceId·서버 경유는 상속 안 됨</div>
   </div>
 
   <div class="feat">
@@ -336,6 +339,17 @@
       <li>시작 전 중복 실행·포트 확인 (<code>server.json</code> 보호)</li>
     </ul>
     <div class="proof">확인: 파일 56줄 = DB 56행 · 웹 터미널 20회 열고 닫아도 fd/pty 누수 없음 · 토큰 인증</div>
+  </div>
+
+  <div class="feat">
+    <h3>웹 UI <span class="badge b-ok">동작</span></h3>
+    <ul>
+      <li><code>web/</code> (Vite + React + xterm), 서버가 <code>/</code>에서 서빙</li>
+      <li>세션 목록 실시간 · 상세 탭: 터미널 / 화면 / 보내기 / 결과 / 훅 이벤트 / 라우트 · 세션 정보(만든 세션 포함)</li>
+      <li>채널 화면: 이벤트·전달·답장, 직접 답장(파일), local 주입(첨부)</li>
+      <li>서버 옵션 전부 대응 (<code>docs/web-ui.md</code> 표), 토큰, 주소 해시, 라이트/다크, 모바일 폭</li>
+    </ul>
+    <div class="proof">확인: 실제 Chrome으로 보내기·대기·시간 초과·Esc 중단·라우트·자동 답장·첨부·직접 답장까지 조작, 콘솔 에러 없음 · 터미널 깜빡임 수정 후 여러 화면 크기에서 안정</div>
   </div>
 
   <div class="feat">
@@ -401,6 +415,10 @@
     <tr><td class="nowrap">서버</td><td>느린 웹소켓 구독자가 전달을 붙잡음</td><td>동시 전송 + 2초 제한</td></tr>
     <tr><td class="nowrap">서버</td><td><code>/ws/events</code>가 3초마다 의미 없는 푸시</td><td>실제 변화 있을 때만</td></tr>
     <tr><td class="nowrap">서버</td><td><code>/send</code> wait 무한 대기, 답장 API 무제한</td><td>기본 900초, 400/413 검사</td></tr>
+    <tr><td class="nowrap">상태</td><td>응답 전에 Esc로 끊으면 트랜스크립트에 표시가 없어 busy 고착</td><td>화면 기반 감지 (“esc to” 사라짐 + 0.8초 재확인, 서버는 두 번 연속 확인)</td></tr>
+    <tr><td class="nowrap">전달</td><td>응답 전 Esc 뒤 입력창에 되돌아온 프롬프트가 다음 메시지와 합쳐짐</td><td>표시해 두고 다음 send 전에 입력창 비움</td></tr>
+    <tr><td class="nowrap">기타</td><td>CLI 출력을 파이프로 잘라 읽으면 EPIPE 에러</td><td>조용히 종료</td></tr>
+    <tr><td class="nowrap">웹</td><td>웹 터미널이 깜빡임 (스크롤바 ↔ 리사이즈 반복)</td><td>스크롤 숨김 + 맞춤 디바운스 + 크기 바뀔 때만 resize</td></tr>
     <tr><td class="nowrap">기타</td><td>마스터 세션이 <code>cardinal</code>을 못 찾음 (PATH)</td><td>시스템 프롬프트에 절대경로</td></tr>
     <tr><td class="nowrap">기타</td><td>node-pty 실행 권한 / Node 서버</td><td>Python 서버로 이전하며 해소</td></tr>
   </tbody>
@@ -437,6 +455,13 @@
       <td>지켜보기</td>
     </tr>
     <tr>
+      <td><span class="badge b-low">낮음</span></td>
+      <td>초기에 한 번, Esc로 되돌아온 프롬프트가 다음 메시지와 합쳐진 사례</td>
+      <td>입력창 비우기 도입 뒤 7번 재시도해도 재현 안 됨. 원인 미확정</td>
+      <td class="nowrap">관찰</td>
+      <td>다시 보이면 화면 캡처로 추적</td>
+    </tr>
+    <tr>
       <td><span class="badge b-unk">안내</span></td>
       <td>한 번에 보내는 텍스트 16,000바이트 한도</td>
       <td>tmux가 명령 하나로 받는 크기 한도 (실측 16,343바이트). 한글 약 5,300자</td>
@@ -464,8 +489,7 @@
     <tr><td><span class="badge b-unk">미검증</span></td><td>디스코드 실제 봇 연동</td><td>토큰 필요. MESSAGE CONTENT 권한 필수. 코드와 잘못된 토큰 감지까지만 확인</td></tr>
     <tr><td><span class="badge b-unk">미검증</span></td><td>실제 권한 승인 창(<code>waiting</code>)</td><td>테스트 세션이 auto mode라 승인 창이 안 뜸</td></tr>
     <tr><td><span class="badge b-unk">미검증</span></td><td>턴 도중 자동 압축, <code>auth_success</code> 같은 알림 타입</td><td>각각 idle/waiting으로 잘못 보일 것으로 추정</td></tr>
-    <tr><td><span class="badge b-low">기능</span></td><td><code>cardinal route</code> 명령</td><td>지금은 라우트를 서버 API로만 붙임 → 마스터가 만든 워커에 못 붙임</td></tr>
-    <tr><td><span class="badge b-low">기능</span></td><td>웹 UI 보강</td><td>채널 이벤트/전달/답장 화면, 라우트 관리</td></tr>
+    <tr><td><span class="badge b-low">기능</span></td><td><code>cardinal route</code> 명령</td><td>지금은 라우트를 서버 API(웹 UI 포함)로만 붙임 → 마스터가 만든 워커에 스스로 못 붙임. 라우트 켜기/끄기 API도 없음</td></tr>
     <tr><td><span class="badge b-low">기능</span></td><td>카디널 캐릭터성</td><td>README 목표</td></tr>
   </tbody>
 </table>
@@ -477,14 +501,14 @@
   <ol class="next">
     <li><strong>디스코드 실제 연동 테스트</strong> — 봇 토큰 준비 후 라우트 → 전달 → 답장 → 파일 첨부까지.</li>
     <li><strong>승인 창 환경 확인</strong> — auto mode가 아닌 세션에서 <code>waiting</code> 판정과 동시 훅 덮어쓰기 실제 영향.</li>
-    <li><strong>기능</strong> — <code>cardinal route</code>, 웹 UI(채널 이벤트·라우트), 카디널 캐릭터성.</li>
+    <li><strong>기능</strong> — <code>cardinal route</code> (+ 라우트 켜기/끄기), 카디널 캐릭터성.</li>
     <li><strong>낮음 이슈 정리</strong> — Enter 실패 시 입력창 비우기 등.</li>
   </ol>
 </div>
 
 <footer>
-  문서: <code>docs/session-system.md</code> · <code>docs/server.md</code> · <code>docs/web-terminal.md</code> (각 영문판 포함) ·
-  커밋 이력: <code>918710a</code> README → <code>cdfd448</code> tmux 세션 기반 → <code>1508f72</code> 서버 분리 + 채널 + 동시성 → <code>ba6f6f2</code> 중간/낮음 이슈 + 전달 안정성 → <code>1597f68</code> Esc 사람 개입 + 파서 + 서버 시작 전 확인 → <code>092ef84</code> 세션별 작업 폴더 + 신뢰 다이얼로그
+  문서: <code>docs/session-system.md</code> · <code>docs/server.md</code> · <code>docs/web-terminal.md</code> · <code>docs/web-ui.md</code> (각 영문판 포함) ·
+  커밋 이력: <code>918710a</code> README → <code>cdfd448</code> tmux 세션 기반 → <code>1508f72</code> 서버 분리 + 채널 + 동시성 → <code>ba6f6f2</code> 중간/낮음 이슈 + 전달 안정성 → <code>1597f68</code> Esc 사람 개입 + 파서 + 서버 시작 전 확인 → <code>092ef84</code> 세션별 작업 폴더 + 신뢰 다이얼로그 → <code>566a48e</code> 웹 UI + 마스터 작업 폴더 상속 + 응답 전 중단 처리
 </footer>
 
 </main>
