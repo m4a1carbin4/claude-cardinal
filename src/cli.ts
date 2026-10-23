@@ -7,7 +7,8 @@ import type { SessionStatus } from './session.js';
 const HELP = `cardinal — tmux + Claude Code 세션 제어
 
   cardinal new <name> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [-- <claude 인자...>]
-                                             --cwd: 작업 폴더 (기본 $CARDINAL_WORKSPACE). 처음 쓰는 폴더는 신뢰 다이얼로그가 뜸
+                                             --cwd: 작업 폴더. 없으면 카디널 세션(마스터) 안에서 부른 경우 그 세션의 폴더,
+                                                    아니면 $CARDINAL_WORKSPACE. 처음 쓰는 폴더는 신뢰 다이얼로그가 뜸
                                              --trust: 그 다이얼로그를 자동으로 수락
   cardinal ls [--json]                       세션 목록 + 상태
   cardinal status <name> [--json]            한 세션 상태
@@ -66,6 +67,7 @@ function printTable(list: SessionStatus[]) {
 function printStatus(s: SessionStatus) {
   console.log(`${s.name}  [${s.role}]  ${s.state}${s.tool ? ` (${s.tool})` : ''}  ${ago(s.stateAt)} 전`);
   console.log(`  cwd:     ${s.cwd}`);
+  if (s.parent) console.log(`  parent:  ${s.parent.name} (${s.parent.instanceId.slice(0, 8)})`);
   console.log(`  tmux:    ${s.tmux} ${s.alive ? '' : '(죽음)'}`);
   console.log(`  claude:  ${s.claudeSessionId}`);
   if (s.detail) console.log(`  detail:  ${s.detail}`);
@@ -153,7 +155,12 @@ async function main() {
         // 신뢰 다이얼로그에서 멈춤: 기다려도 안 풀리니 바로 알려주고 실패로
         if (st.trustPrompt) fail(`${meta.name}: 작업 폴더 신뢰 다이얼로그 대기 중. cardinal keys ${meta.name} Down Enter 로 넘기거나 다음부터 --trust`);
       } else if (o.json) console.log(JSON.stringify(await session.getStatus(meta.name), null, 2));
-      else console.log(`created ${meta.name} (tmux: ${meta.tmux}, claude: ${meta.claudeSessionId})`);
+      else
+        console.log(
+          `created ${meta.name} (tmux: ${meta.tmux}, claude: ${meta.claudeSessionId}, cwd: ${meta.cwd}` +
+            (meta.parent ? `, 만든 세션: ${meta.parent.name}` : '') +
+            ')',
+        );
       break;
     }
     case 'ls': {
@@ -255,5 +262,11 @@ async function main() {
       fail(`모르는 명령: ${cmd}\n\n${HELP}`);
   }
 }
+
+// | head 처럼 받는 쪽이 먼저 닫히면 EPIPE. 에러 덤프 없이 조용히 끝냄
+process.stdout.on('error', (e: NodeJS.ErrnoException) => {
+  if (e.code === 'EPIPE') process.exit(0);
+  throw e;
+});
 
 main().catch((e) => fail(e?.message ?? String(e)));

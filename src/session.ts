@@ -59,7 +59,7 @@ const COMMON_PROMPT = (name: string, role: Role) => `
 const MASTER_PROMPT = `
 너는 마스터 세션이다. 작업을 나눌 때는 Claude Code 내장 서브 에이전트(Agent/Task 도구)나 워크플로 대신
 \`cardinal new <이름> --prompt "<지시>" --wait\` 로 독립 워커 세션을 띄워서 맡겨라.
-특정 저장소/폴더에서 일해야 하면 \`--cwd <경로>\` (처음 쓰는 폴더면 \`--trust\` 도 같이).
+워커는 기본으로 너와 같은 작업 폴더에서 뜬다. 다른 폴더가 필요하면 \`--cwd <경로>\` (처음 쓰는 폴더면 \`--trust\` 도 같이).
 사용자가 서브 에이전트를 쓰라고 따로 요청한 경우에만 예외.
 - 지시 추가: \`cardinal send <이름> "<메시지>" --wait\` (마지막 응답이 출력됨)
 - 상태 확인: \`cardinal ls\`, \`cardinal status <이름>\`
@@ -91,6 +91,17 @@ function resolveCwd(cwd?: string): string {
   const abs = path.resolve(cwd);
   if (!fs.statSync(abs, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`작업 폴더가 없거나 디렉터리가 아님: ${abs}`);
   return fs.realpathSync(abs);
+}
+
+// 이 CLI 를 부른 게 카디널 세션 안(예: 마스터의 Bash 도구)이면 그 세션.
+// tmux -e 로 넣어준 CARDINAL_SESSION/INSTANCE 가 남아 있음. 같은 이름으로 다시 만들어진 세션과 헷갈리지 않게
+// meta 의 instanceId 까지 맞아야 인정
+function callerSession(): SessionMeta | undefined {
+  const name = process.env.CARDINAL_SESSION;
+  const instanceId = process.env.CARDINAL_INSTANCE;
+  if (!name || !instanceId) return undefined;
+  const meta = readMeta(name);
+  return meta?.instanceId === instanceId ? meta : undefined;
 }
 
 // --trust: 신뢰 다이얼로그가 뜨면 "Yes, I trust this folder" 로 넘김. 안 뜨고 바로 준비되면 그냥 끝
@@ -137,7 +148,9 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
   await assertNameFree(name);
 
   const role = opts.role ?? 'worker';
-  const cwd = resolveCwd(opts.cwd);
+  // 작업 폴더: --cwd > 만든 세션(마스터)의 작업 폴더 > 고정 워크스페이스
+  const parent = callerSession();
+  const cwd = resolveCwd(opts.cwd ?? parent?.cwd);
 
   const instanceId = randomUUID();
   const hdir = hookDir(instanceId);
@@ -163,6 +176,7 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
     claudeSessionId,
     claudeArgs,
     createdAt: new Date().toISOString(),
+    ...(parent ? { parent: { name: parent.name, instanceId: parent.instanceId! } } : {}),
   };
   // 이전에 같은 이름으로 죽은 세션 기록(이름 폴더 + 그 훅 폴더)이 남아 있으면 치우고 시작
   removeSession(name);
@@ -202,6 +216,7 @@ export interface SessionStatus extends SessionMeta {
   currentClaudeSessionId: string; // /clear 뒤엔 meta.claudeSessionId 와 다름
   alive: boolean;
   trustPrompt?: boolean; // starting 인데 신뢰 다이얼로그가 떠 있음 (사람이나 --trust 가 넘겨야 함)
+  restoredInput?: boolean; // 응답 전 Esc 중단으로 프롬프트가 입력창에 되돌아왔을 수 있음
   state: SessionState;
   stateAt?: string;
   event?: string;
@@ -214,12 +229,48 @@ const INTERRUPTED_DETAIL = '사람이 중단함 (Esc)';
 // Esc 로 중단하면 Stop 훅이 안 와서 상태가 busy 에 남음. 사람이 개입한 거니까 거기서 손 떼고 idle 로 봄.
 // 트랜스크립트에 마지막 사람 입력 뒤로 "[Request interrupted by user]" 가 있으면 중단된 것.
 // 알아낸 건 state.json 에도 적어서 서버 DB/웹 UI 도 같은 상태를 보게 함 (그 사이 훅이 새로 썼으면 안 덮음)
-function applyInterrupt(meta: SessionMeta, s: SessionStateFile | undefined): SessionStateFile | undefined {
+// 작업 중이면 Claude Code 화면 맨 아래 줄에 "esc to interrupt" 가 떠 있음 (좁은 창에선 "esc to…" 로 잘림)
+const BUSY_HINT_RE = /esc to/i;
+const SCREEN_CHECK_MIN_AGE_MS = 3_000;
+const SCREEN_RECHECK_MS = 800;
+// 이보다 좁으면 안내가 잘려서 안 보일 수 있어 화면 판정은 안 함 (잘못 판정할 바엔 건너뜀)
+const SCREEN_CHECK_MIN_WIDTH = 60;
+
+const footerShowsBusy = (screen: string) =>
+  BUSY_HINT_RE.test(screen.split('\n').filter((l) => l.trim()).slice(-3).join('\n'));
+
+// 응답이 나오기 전에 Esc 로 중단하면 트랜스크립트에 중단 표시가 안 남고 (실측) 프롬프트가 입력창으로 되돌아옴.
+// 그래서 화면으로 판정: busy 가 3초 넘게 그대로인데 맨 아래에 작업 중 안내가 없고,
+// 0.8초 뒤 다시 봐도 훅이 새로 안 찍혔고 여전히 없으면 중단된 것
+async function screenSaysStopped(meta: SessionMeta, s: SessionStateFile): Promise<boolean> {
+  if (s.state !== 'busy' || Date.now() - Date.parse(s.at) < SCREEN_CHECK_MIN_AGE_MS) return false;
+  if ((await tmux.paneWidth(meta.tmux).catch(() => 0)) < SCREEN_CHECK_MIN_WIDTH) return false;
+  const first = await tmux.capturePane(meta.tmux).catch(() => null);
+  if (first === null || footerShowsBusy(first)) return false;
+  await sleep(SCREEN_RECHECK_MS);
+  if (readState(stateDir(meta))?.at !== s.at) return false; // 그 사이 훅이 찍음 (Stop 등) → 정상 종료
+  const second = await tmux.capturePane(meta.tmux).catch(() => null);
+  return second !== null && !footerShowsBusy(second);
+}
+
+async function applyInterrupt(meta: SessionMeta, s: SessionStateFile | undefined): Promise<SessionStateFile | undefined> {
   if (!s || (s.state !== 'busy' && s.state !== 'waiting')) return s;
   const file = transcriptFile(meta.name);
-  const at = file ? interruptedAt(file) : undefined;
-  if (!at || Date.parse(at) < Date.parse(s.at)) return s;
-  const next: SessionStateFile = { ...s, state: 'idle', at, event: 'Interrupted', detail: INTERRUPTED_DETAIL, tool: undefined };
+  const marked = file ? interruptedAt(file) : undefined;
+  let next: SessionStateFile;
+  if (marked && Date.parse(marked) >= Date.parse(s.at)) {
+    next = { ...s, state: 'idle', at: marked, event: 'Interrupted', detail: INTERRUPTED_DETAIL, tool: undefined };
+  } else if (await screenSaysStopped(meta, s)) {
+    next = {
+      ...s,
+      state: 'idle',
+      at: new Date().toISOString(),
+      event: 'Interrupted',
+      detail: `${INTERRUPTED_DETAIL}, 응답 전`,
+      tool: undefined,
+      restoredInput: true,
+    };
+  } else return s;
   const dir = stateDir(meta);
   try {
     if (readState(dir)?.at === s.at) writeState(dir, next);
@@ -233,7 +284,7 @@ export async function getStatus(name: string): Promise<SessionStatus> {
   const meta = readMeta(name);
   if (!meta) throw new Error(`모르는 세션: ${name}`);
   const alive = await tmux.hasSession(meta.tmux);
-  const s = alive ? applyInterrupt(meta, readState(stateDir(meta))) : readState(stateDir(meta));
+  const s = alive ? await applyInterrupt(meta, readState(stateDir(meta))) : readState(stateDir(meta));
   // 아직 준비 전이면 신뢰 다이얼로그에 걸려 있는지 화면으로 확인 (starting 일 때만 봐서 비용 작음)
   const state = alive ? (s?.state ?? 'starting') : 'ended';
   const trustPrompt = state === 'starting' && TRUST_PROMPT_RE.test(await tmux.capturePane(meta.tmux).catch(() => ''));
@@ -244,6 +295,7 @@ export async function getStatus(name: string): Promise<SessionStatus> {
     // tmux가 죽었으면 훅이 못 찍었어도 ended로 봄
     state,
     trustPrompt: trustPrompt || undefined,
+    restoredInput: s?.restoredInput || undefined,
     stateAt: s?.at,
     event: s?.event,
     detail: trustPrompt ? `작업 폴더 신뢰 다이얼로그 대기 (${meta.cwd}) — cardinal keys ${name} Down Enter` : s?.detail,
@@ -379,6 +431,13 @@ export async function send(name: string, text: string, opts: SendOptions = {}): 
     if (st.event === 'SessionStart' && st.stateAt) {
       const age = Date.now() - Date.parse(st.stateAt);
       if (age < STARTUP_SETTLE_MS) await sleep(STARTUP_SETTLE_MS - age);
+    }
+
+    // 응답 전 Esc 로 중단된 뒤면 claude 가 그 프롬프트를 입력창에 되돌려 놓았을 수 있음.
+    // 그대로 붙여넣으면 섞이니까 비우고 시작. C-u 는 한 줄만 지워서 BSpace 로 윗줄과 합치며 반복
+    if (st.restoredInput) {
+      await tmux.sendKeys(st.tmux, 'C-u', ...Array.from({ length: 40 }, () => ['BSpace', 'C-u']).flat());
+      await sleep(150);
     }
 
     const transcript = transcriptFile(name);

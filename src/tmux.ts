@@ -59,6 +59,10 @@ export async function pasteText(t: string, text: string): Promise<void> {
   await tmux('paste-buffer', '-p', '-d', '-b', buf, '-t', paneTarget(t));
 }
 
+export async function paneWidth(t: string): Promise<number> {
+  return Number((await tmux('display-message', '-p', '-t', paneTarget(t), '#{pane_width}')).trim()) || 0;
+}
+
 export async function setOption(t: string, option: string, value: string): Promise<void> {
   await tmux('set-option', '-t', sessionTarget(t), option, value);
 }

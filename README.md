@@ -56,6 +56,7 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [세션 시스템](docs/session-system.md) ([English](docs/session-system.en.md))
 - [웹 터미널은 어떻게 도는가](docs/web-terminal.md) ([English](docs/web-terminal.en.md))
 - [카디널 서버: DB, 메시지 채널](docs/server.md) ([English](docs/server.en.md))
+- [웹 UI](docs/web-ui.md) ([English](docs/web-ui.en.md))
 
 ## 할 일
 
@@ -75,7 +76,7 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 
 ## 실행 방법
 
-필요한 거: tmux, node 22+, pnpm, claude, (서버) python 3.12+ / uv
+필요한 거: tmux, node 22+, pnpm, claude, (서버) python 3.12+ / uv, (웹 UI) 같은 node/pnpm
 
 ```sh
 pnpm install && pnpm build
@@ -87,6 +88,7 @@ ln -s "$PWD/bin/cardinal" ~/.local/bin/cardinal   # 선택. PATH 어딘가에
 ```sh
 cardinal new w1                                  # 워커 하나 띄우기 (기본 작업 폴더)
 cardinal new w4 --cwd ~/repo/app --trust         # 작업 폴더 지정 (처음 쓰는 폴더면 --trust)
+                                                 # 마스터 안에서 new 하면 기본이 마스터의 작업 폴더
 cardinal new boss --role master                  # 마스터
 cardinal new w2 --prompt "테스트 돌려봐" --wait   # 첫 지시 주고 끝날 때까지 대기
 cardinal new w3 -- --model sonnet               # -- 뒤는 claude 인자 그대로
@@ -118,7 +120,7 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 봇도 같이
 CARDINAL_TOKEN=xxx uv run cardinal-server  # 토큰 걸기 (?token=xxx 또는 Bearer)
 ```
 
-- 웹 터미널, 세션 생성할 때 채널 라우트 (채널명 + 트리거) 붙이기
+- 웹 UI (아래), 세션 생성할 때 채널 라우트 (채널명 + 트리거) 붙이기
 - 세션 기록은 `~/.cardinal/cardinal.db` (SQLite)에 쌓임. purge해도 DB엔 남음
 - 상태 확인: `GET /api/health` (디스코드 연결 상태 포함)
 - 라우트에 맞는 디스코드 메시지 → 세션에 전달 → 세션 안 에이전트가 답장:
@@ -128,3 +130,13 @@ cardinal reply evt_71363e3e "답장" --file result.png
 ```
 
 API랑 채널 자세한 건 [docs/server.md](docs/server.md).
+
+### 웹 UI
+
+```sh
+cd web && pnpm install && pnpm build   # → web/dist, 카디널 서버가 / 에서 서빙 (서버 재시작 필요 없음)
+pnpm dev                               # 개발: http://localhost:5173, /api·/ws 는 7878 서버로 프록시
+```
+
+세션 목록(실시간) · 새 세션(작업 폴더, 신뢰 자동 수락, 라우트) · 세션별 터미널 / 메시지·키 보내기 / 결과 / 훅 이벤트 / 라우트 · 채널 이벤트→전달→답장 흐름과 local 메시지 넣기 · 디스코드 연결 상태.
+주소 해시로 화면을 고를 수 있음: `/#s=<세션 이름>`, `/#channel`. 자세한 건 [docs/web-ui.md](docs/web-ui.md).

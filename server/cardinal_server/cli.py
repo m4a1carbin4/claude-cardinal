@@ -19,7 +19,10 @@ class CliError(Exception):
 class Cli:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.env = {**os.environ, "CARDINAL_HOME": str(settings.home)}
+        # 서버를 카디널 세션 안에서 띄웠으면 그 세션의 CARDINAL_SESSION/INSTANCE 가 남아 있음.
+        # 그대로 넘기면 웹/API 로 만든 세션이 그 세션을 부모로 보고 작업 폴더를 물려받으니 지움
+        env = {k: v for k, v in os.environ.items() if k not in ("CARDINAL_SESSION", "CARDINAL_INSTANCE", "CARDINAL_ROLE")}
+        self.env = {**env, "CARDINAL_HOME": str(settings.home)}
 
     async def run(self, *args: str, stdin: str | None = None, timeout: float | None = 60) -> str:
         proc = await asyncio.create_subprocess_exec(

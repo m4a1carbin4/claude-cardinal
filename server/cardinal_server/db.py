@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   tool              TEXT,
   transcript_path   TEXT,
   claude_session_id TEXT,                      -- 지금 claude 세션 ID (/clear 하면 바뀜)
+  parent_id         TEXT,                      -- 이 세션을 만든 세션의 고유 키 (마스터가 띄운 워커)
+  parent_name       TEXT,
   updated_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_name ON sessions(name, created_at);
@@ -131,6 +133,9 @@ class DB:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(sessions)")}
         if "claude_session_id" not in cols:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
+        for col in ("parent_id", "parent_name"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
 
     def q(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
         with self.lock:
@@ -154,9 +159,9 @@ class DB:
             """
             INSERT INTO sessions (id, name, role, tmux, cwd, claude_args, created_at, alive,
                                   state, state_at, last_event, detail, tool, transcript_path,
-                                  claude_session_id, updated_at)
+                                  claude_session_id, parent_id, parent_name, updated_at)
             VALUES (:id, :name, :role, :tmux, :cwd, :args, :created, :alive,
-                    :state, :state_at, :event, :detail, :tool, :transcript, :claude_sid, :now)
+                    :state, :state_at, :event, :detail, :tool, :transcript, :claude_sid, :parent_id, :parent_name, :now)
             ON CONFLICT(id) DO UPDATE SET
               alive=:alive, state=:state, state_at=:state_at, last_event=:event, detail=:detail,
               tool=:tool, transcript_path=COALESCE(:transcript, transcript_path),
@@ -178,6 +183,8 @@ class DB:
                 "tool": s.get("tool"),
                 "transcript": s.get("transcriptPath"),
                 "claude_sid": s.get("claudeSessionId") or meta["claudeSessionId"],
+                "parent_id": (meta.get("parent") or {}).get("instanceId"),
+                "parent_name": (meta.get("parent") or {}).get("name"),
                 "now": now(),
             },
         )

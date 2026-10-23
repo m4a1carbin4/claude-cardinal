@@ -41,7 +41,7 @@ CLI는 서버 없이 tmux랑 파일만 직접 만짐. 서버(`server/`, Python)�
 
 `cardinal new <이름>` 하면 대충 이렇게 돌아감:
 
-0. 작업 폴더: 기본은 고정 워크스페이스 `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`, 없으면 만듦). `--cwd <경로>`를 주면 그 폴더 (있는 디렉터리여야 함, 상대 경로는 호출한 위치 기준). 어느 쪽이든 실제 경로(realpath)로 `meta.json`의 `cwd`에 기록. 경로 검사는 아래 3번에서 예전 기록을 지우기 **전에** 해서, 잘못된 경로를 줘도 같은 이름의 예전 기록은 그대로 남음.
+0. 작업 폴더: `--cwd <경로>` > **이 CLI를 부른 카디널 세션(마스터)의 작업 폴더** > 고정 워크스페이스 `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`, 없으면 만듦). 마스터가 `cardinal new`로 워커를 띄우면 마스터 안의 `CARDINAL_SESSION`/`CARDINAL_INSTANCE` 환경변수로 부모를 알아내고 (그 세션 `meta.json`의 instanceId까지 맞아야 인정), 워커 `meta.json`에 `parent: {name, instanceId}`를 남김. `--cwd`를 주면 그 폴더 (있는 디렉터리여야 함, 상대 경로는 호출한 위치 기준). 어느 쪽이든 실제 경로(realpath)로 `meta.json`의 `cwd`에 기록. 경로 검사는 아래 3번에서 예전 기록을 지우기 **전에** 해서, 잘못된 경로를 줘도 같은 이름의 예전 기록은 그대로 남음.
 1. 이름 검사 (`[A-Za-z0-9][A-Za-z0-9_-]{0,47}`).
    이후 단계는 전부 **이름별 생성 락**(`sessions/.create-<이름>.lock`, 최대 30초 대기) 안에서 함. 같은 이름 생성은 한 번에 하나씩.
    - 락 안에서 지금 세션 목록을 봄: 같은 이름이 살아 있으면 `이미 있는 세션: <이름> (<상태>)`, 카디널 기록 없이 같은 이름 tmux 세션만 있어도 `이미 있는 tmux 세션`으로 거부. 죽은 세션 기록만 남은 이름은 새로 만듦.
@@ -66,7 +66,8 @@ claude가 종료되면 tmux 세션도 같이 사라짐.
 ### 작업 폴더와 기록 위치
 
 - **기록 위치는 항상 고정**: `meta.json`(`$CARDINAL_HOME/sessions/<이름>/`)과 훅 폴더(`$CARDINAL_HOME/hooks/<instanceId>/`)는 작업 폴더와 상관없음. 서버가 보는 위치도 이것뿐. 작업 폴더엔 카디널 파일이 하나도 안 생김.
-- **작업 폴더는 세션별**: 기본은 고정 워크스페이스, `--cwd`(API는 `cwd`, 절대 경로만)로 바꿀 수 있음.
+- **작업 폴더는 세션별**: 기본은 고정 워크스페이스, `--cwd`(API는 `cwd`, 절대 경로만)로 바꿀 수 있음. 마스터가 만든 워커는 `--cwd`가 없으면 마스터와 같은 폴더 (이미 신뢰한 폴더라 신뢰 다이얼로그도 안 뜸).
+- 서버가 CLI를 부를 땐 `CARDINAL_SESSION`/`CARDINAL_INSTANCE`/`CARDINAL_ROLE`을 지우고 부름. 서버를 카디널 세션 안에서 띄웠어도 웹/API로 만든 세션이 그 세션의 폴더를 물려받지 않게.
 - claude는 트랜스크립트를 `~/.claude/projects/<작업 폴더 경로에서 영숫자 아닌 건 전부 '-'>/<세션 ID>.jsonl` 에 씀 (`CLAUDE_CONFIG_DIR` 쓰면 그 아래). 카디널은 `meta.json`의 `cwd`(실제 경로)와 훅이 알려준 지금 세션 ID로 이 경로를 계산함 (`transcriptPath()` in `src/paths.ts`). 그래서 작업 폴더가 세션마다 달라도, `/tmp` 같은 심볼릭 링크 경로를 줘도, 세션이 죽은 뒤에도 찾을 수 있음.
 
 ### 신뢰 다이얼로그 (처음 쓰는 작업 폴더)
@@ -132,6 +133,8 @@ tmux가 죽었는데 훅이 못 찍은 경우도 조회할 때 `ended`로 보정
 사람이 Esc로 중단하면 `Stop` 훅이 안 와서 상태가 `busy`에 남음. 그 턴은 사람 손으로 넘어간 거라, 카디널은 거기서 손을 떼고 **사람에게 맡김**.
 
 - 감지: 트랜스크립트 끝(뒤쪽 512KB)을 봐서, 마지막 사람 입력 뒤로 `[Request interrupted by user]` (도구 실행 중이면 `… for tool use]`)가 있고 그 시각이 훅 상태보다 늦으면 중단된 것.
+- **응답 전 중단**: 응답이 한 글자도 나오기 전에 Esc를 누르면 트랜스크립트에 중단 표시가 **안 남고**, Claude Code가 그 프롬프트를 입력창에 되돌려 놓음 (실측). 그래서 화면으로도 판정: 작업 중이면 화면 맨 아래 줄에 `esc to interrupt`(좁으면 `esc to…`)가 떠 있음. 상태가 `busy`로 3초 넘게 그대로인데 맨 아래 3줄에 이게 없고, 0.8초 뒤 다시 봐도 훅이 새로 안 찍혔고 여전히 없으면 중단. 창 폭이 60칸 미만이면 안내가 잘릴 수 있어서 화면 판정은 안 함 (잘못 판정할 바엔 건너뜀). 정상 10초 작업 중 12번 조회해도 오판 0.
+- **되돌아온 프롬프트 비우기**: 화면 판정으로 잡은 중단은 `restoredInput: true`를 같이 기록. 다음 `send`는 붙여넣기 전에 입력창을 비움 (`C-u`는 한 줄만 지워서 `BSpace`로 윗줄과 합치며 반복). 안 비우면 되돌아온 프롬프트와 새 메시지가 한 프롬프트로 합쳐짐.
 - 처리: 상태를 `idle` + 이벤트 `Interrupted` + "사람이 중단함 (Esc)"로 봄. CLI가 조회할 때 `state.json`에도 적음 (그 사이 훅이 새로 썼으면 안 덮음). 서버 수집기도 같은 규칙으로 DB에 반영해서 아무도 CLI를 안 불러도 웹 UI에 보임.
 - 결과: 기다리던 `send --wait`는 바로 끝나고 `interrupted: true` + 중단 전까지의 응답을 돌려줌 (실측: Esc 후 1초 안). 다음 `send`는 바로 들어감 (예전엔 idle 대기로 최대 600초 막혔음). `auto_reply`는 보내지 않고 전달 기록에 "사람이 중단함 (Esc) → 자동 답장 안 함". `report`의 phase는 `interrupted`.
 
@@ -237,7 +240,7 @@ cardinal status <이름> [--json]
 cardinal send <이름> <텍스트|-> [--wait] [--timeout 초] [--no-enter] [--force]
 cardinal keys <이름> <키...>
 cardinal wait <이름> [--timeout 초]
-cardinal screen <이름> [--lines N]
+cardinal screen <이름> [--lines N]          # Claude Code 는 대체 화면이라 tmux 스크롤백이 거의 없음
 cardinal report <이름> [--tools] [--json]
 cardinal last <이름>
 cardinal attach <이름>

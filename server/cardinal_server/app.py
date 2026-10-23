@@ -18,21 +18,32 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from . import terminal
 from .channel.base import InboundAttachment, InboundMessage, OutboundFile
 from .channel.local_adapter import LocalAdapter
 from .cli import Cli, CliError
-from .config import Settings, load
+from .config import REPO_ROOT, Settings, load
 from .db import DB
 from .ingest import Ingestor
 from .router import Router
 from .running import running_elsewhere
 
 log = logging.getLogger("cardinal")
-STATIC = Path(__file__).parent / "static"
+# 웹 UI (web/, Vite + React) 빌드 결과. cd web && pnpm install && pnpm build
+WEB_DIST = Path(os.environ.get("CARDINAL_WEB_DIST", REPO_ROOT / "web" / "dist")).resolve()
+
+NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>Cardinal</title>
+<body style="font-family:system-ui;max-width:560px;margin:60px auto;padding:0 16px;line-height:1.6">
+<h1>웹 UI가 아직 빌드되지 않았음</h1>
+<p>저장소에서 아래를 실행한 뒤 새로고침하세요. 서버는 재시작할 필요 없음.</p>
+<pre style="background:#eee;padding:12px;border-radius:8px">cd web
+pnpm install
+pnpm build</pre>
+<p>개발 중이면 <code>cd web &amp;&amp; pnpm dev</code> (API/웹소켓은 이 서버로 프록시).</p>
+<p>API는 그대로 쓸 수 있음: <code>/api/health</code></p></body>"""
 
 # 답장 API 서버 쪽 한도 (CLI 도 같은 값으로 미리 검사함, 디스코드 무부스트 서버 기준)
 MAX_REPLY_FILES = 10
@@ -214,9 +225,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ---------- 페이지 ----------
 
-    @app.get("/", dependencies=api)
+    # 웹 UI. 정적 파일엔 비밀이 없어서 토큰 없이 내려줌 (API/웹소켓은 토큰 필요)
+    @app.get("/", include_in_schema=False)
     async def index():
-        return FileResponse(STATIC / "index.html")
+        page = WEB_DIST / "index.html"
+        return FileResponse(page) if page.is_file() else HTMLResponse(NOT_BUILT)
 
     @app.get("/api/health", dependencies=api)
     async def health():
@@ -401,5 +414,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
         await subscribe(ws, channel_hub, None, on_text)
+
+    # 웹 UI 정적 파일 (assets/*, banner.png 등). 맨 마지막에 등록해서 API 라우트를 가로채지 않음.
+    # 빌드를 나중에 해도 서버 재시작 없이 바로 보이게 요청 때마다 파일을 찾음
+    @app.get("/{path:path}", include_in_schema=False)
+    async def web_static(path: str):
+        if path.startswith(("api/", "ws/")):
+            raise HTTPException(404, "not found")
+        f = (WEB_DIST / path).resolve()
+        # dist 밖으로 나가는 경로(../) 차단
+        if WEB_DIST in f.parents and f.is_file():
+            return FileResponse(f)
+        raise HTTPException(404, "not found")
 
     return app

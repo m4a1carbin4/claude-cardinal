@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from collections.abc import Callable
 from pathlib import Path
@@ -87,6 +88,34 @@ def _ts(s: str) -> float:
     return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 
 
+# 작업 중이면 Claude Code 화면 맨 아래 줄에 "esc to interrupt" (좁으면 "esc to…") 가 떠 있음.
+# 응답 전에 Esc 로 중단하면 트랜스크립트에 중단 표시가 안 남아서 이걸로 판정 (CLI src/session.ts 와 같은 규칙)
+_BUSY_HINT = re.compile(r"esc to", re.I)
+_SCREEN_MIN_AGE_S = 3.0
+_SCREEN_MIN_WIDTH = 60  # 이보다 좁으면 안내가 잘려 안 보일 수 있어 판정 안 함
+_SCREEN_CONFIRM_S = 0.8  # 두 번 연속(이 간격 이상) 안 보여야 인정
+
+
+async def _tmux_out(*args: str) -> str | None:
+    proc = await asyncio.create_subprocess_exec(
+        "tmux", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+    out, _ = await proc.communicate()
+    return out.decode("utf-8", "replace") if proc.returncode == 0 else None
+
+
+async def footer_shows_busy(tmux_name: str) -> bool | None:
+    """작업 중 안내가 보이면 True, 안 보이면 False, 판정 불가(좁은 창 등)면 None"""
+    width = await _tmux_out("display-message", "-p", "-t", f"={tmux_name}:", "#{pane_width}")
+    if not width or int(width.strip() or 0) < _SCREEN_MIN_WIDTH:
+        return None
+    screen = await _tmux_out("capture-pane", "-p", "-t", f"={tmux_name}:")
+    if screen is None:
+        return None
+    tail = [l for l in screen.split("\n") if l.strip()][-3:]
+    return bool(_BUSY_HINT.search("\n".join(tail)))
+
+
 def apply_interrupt(state: dict | None) -> dict | None:
     if not state or state.get("state") not in ("busy", "waiting"):
         return state
@@ -114,6 +143,12 @@ class Ingestor:
         self._kick = asyncio.Event()
         self._last_snapshot = ""
         self._lock = asyncio.Lock()
+        # 세션 → (그때의 state.at, 처음 안내가 안 보인 시각). 두 번 연속 안 보여야 응답 전 중단으로 봄
+        self._no_hint: dict[str, tuple[str, float]] = {}
+
+    def _recheck_soon(self) -> None:
+        # 바로 kick 하면 루프가 쉬지 않고 돌아서, 확인 간격만큼 뒤에 한 번
+        asyncio.get_running_loop().call_later(_SCREEN_CONFIRM_S + 0.2, self._kick.set)
 
     def kick(self) -> None:
         """다음 동기화를 바로 돌리게"""
@@ -161,8 +196,11 @@ class Ingestor:
                 sid = meta.get("instanceId") or meta["claudeSessionId"]
                 seen.add(sid)
                 hdir = self._hook_dir(meta, d)
+                is_alive = meta["tmux"] in alive
                 state = apply_interrupt(_read_json(hdir / "state.json"))
-                self.db.upsert_session(meta, state, meta["tmux"] in alive)
+                if is_alive:
+                    state = await self._screen_interrupt(sid, meta["tmux"], state)
+                self.db.upsert_session(meta, state, is_alive)
                 self._tail_events(sid, hdir / "events.jsonl")
 
             # 폴더가 사라진 세션 (purge 또는 같은 이름으로 새로 만듦) → 기록은 남기고 삭제 표시
@@ -177,6 +215,24 @@ class Ingestor:
             if snapshot != self._last_snapshot:
                 self._last_snapshot = snapshot
                 self.on_change()
+
+    async def _screen_interrupt(self, sid: str, tmux_name: str, state: dict | None) -> dict | None:
+        """busy 가 3초 넘게 그대로인데 화면에 작업 중 안내가 두 번 연속 없으면 응답 전 Esc 중단 (DB만 보정)"""
+        if not state or state.get("state") != "busy" or not state.get("at"):
+            self._no_hint.pop(sid, None)
+            return state
+        if time.time() - _ts(state["at"]) < _SCREEN_MIN_AGE_S or await footer_shows_busy(tmux_name) is not False:
+            self._no_hint.pop(sid, None)
+            return state
+        prev = self._no_hint.get(sid)
+        if not prev or prev[0] != state["at"]:
+            self._no_hint[sid] = (state["at"], time.time())
+            self._recheck_soon()
+            return state
+        if time.time() - prev[1] < _SCREEN_CONFIRM_S:
+            self._recheck_soon()
+            return state
+        return {**state, "state": "idle", "event": "Interrupted", "detail": "사람이 중단함 (Esc), 응답 전", "tool": None}
 
     async def run(self) -> None:
         self.settings.sessions_dir.mkdir(parents=True, exist_ok=True)

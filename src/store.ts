@@ -21,6 +21,7 @@ export interface SessionMeta {
   claudeSessionId: string; // 처음 띄울 때 지정한 ID. /clear 하면 claude 쪽 ID는 바뀜 (state 쪽 참고)
   claudeArgs: string[];
   createdAt: string;
+  parent?: { name: string; instanceId: string }; // 이 세션을 만든 카디널 세션 (마스터가 워커를 띄운 경우)
 }
 
 // 훅이 계속 덮어씀 (claude 쪽 소유)
@@ -32,6 +33,7 @@ export interface SessionStateFile {
   tool?: string;
   transcriptPath?: string;
   claudeSessionId?: string; // 훅이 마지막으로 받은 claude 세션 ID
+  restoredInput?: boolean; // 응답 전 Esc 중단: claude 가 프롬프트를 입력창에 되돌려 놓았을 수 있음 (다음 send 가 비우고 시작)
 }
 
 const metaPath = (name: string) => path.join(sessionDir(name), 'meta.json');

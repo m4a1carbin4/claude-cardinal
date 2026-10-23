@@ -4,14 +4,16 @@
 
 > 처음엔 Node 서버(node-pty)였고 지금은 Python 서버(`ptyprocess`)로 옮김. 원리는 완전히 같음.
 
-궁금했던 거: 서버는 웹소켓으로 바이트만 넘겨주는데, `index.html`은 그걸로 어떻게 tmux 화면을 띄우는 거지?
+궁금했던 거: 서버는 웹소켓으로 바이트만 넘겨주는데, 웹 페이지는 그걸로 어떻게 tmux 화면을 띄우는 거지?
+
+> 웹 UI는 처음엔 단일 `index.html`이었고 지금은 `web/` (Vite + React + TypeScript)로 바뀜. 터미널 부분은 `web/src/components/TerminalView.tsx`. 원리는 같음.
 
 한 줄 답: **서버는 화면을 만들지 않음.** tmux가 "진짜 터미널에 붙었다"고 믿게 가짜 터미널(pty)을 하나 쥐여주고, 거기서 나오는 raw 바이트(글자 + ANSI 제어 코드)를 그대로 브라우저로 흘려보냄. 그 바이트를 해석해서 화면으로 그리는 건 브라우저 안의 **xterm.js** (JS로 만든 터미널 에뮬레이터)가 함. iTerm이나 macOS 터미널 앱이 하는 일을 브라우저 안에서 대신 하는 것.
 
 ## 전체 그림
 
 ```
- 브라우저 (index.html)                    cardinal-server (python)                tmux
+ 브라우저 (web UI)                        cardinal-server (python)                tmux
 ┌───────────────────────┐   WebSocket   ┌────────────────────────┐   pty    ┌──────────────────────────┐
 │ xterm.js              │◀── 바이너리 ──│ ptyprocess             │◀────────│ tmux 클라이언트           │
 │  · 바이트 해석         │    (출력)     │  └ tmux attach-session │         │ (attach-session 프로세스) │
@@ -51,7 +53,7 @@ tmux는 원래 서버-클라이언트 구조.
 
 ### xterm.js
 
-브라우저용 터미널 에뮬레이터 라이브러리. `index.html`이 CDN에서 불러옴 (`server/cardinal_server/static/index.html:66-67`).
+브라우저용 터미널 에뮬레이터 라이브러리. 웹 UI가 npm 패키지(`@xterm/xterm`, `@xterm/addon-fit`)로 번들에 넣음. 터미널 탭을 열 때만 불러옴 (`web/src/components/SessionView.tsx`의 `lazy`).
 
 - 들어온 바이트에서 ANSI/VT 제어 코드를 해석해서 내부에 글자 격자(행×열, 글자마다 색/속성)를 유지하고 화면에 그림.
 - 키보드 입력을 "터미널이라면 보냈을 바이트"로 바꿔줌 (`↑` → `ESC [ A`, `Enter` → `\r`, `Ctrl+C` → `0x03`).
@@ -83,20 +85,20 @@ tmux는 원래 서버-클라이언트 구조.
 
 ### 1. 페이지 열기
 
-1. `GET /` → 서버가 `static/index.html`을 그대로 내려줌 (`server/cardinal_server/app.py`의 `index`).
+1. `GET /` → 서버가 웹 UI 빌드 결과 `web/dist/index.html`을 내려줌 (`server/cardinal_server/app.py`의 `index`). JS/CSS는 `/assets/…`.
 2. 브라우저가 CDN에서 xterm.js, FitAddon을 받음.
-3. `/ws/events` 웹소켓에 붙어서 세션 목록을 받음 (`static/index.html:95-96`). 터미널이랑은 별개인 상태 알림 채널.
+3. `/ws/events` 웹소켓에 붙어서 세션 목록을 받음 (`web/src/App.tsx`, 재연결은 `web/src/hooks.ts`의 `useJsonSocket`). 터미널이랑은 별개인 상태 알림 채널.
 
 ### 2. 세션 클릭 → 붙기
 
-브라우저 (`static/index.html:107-119`):
+브라우저 (`web/src/components/TerminalView.tsx:19-38`):
 
-```js
-term = new Terminal({...});
-fit = new FitAddon.FitAddon(); term.loadAddon(fit);
-term.open($('term'));          // DOM에 터미널 붙이기
+```ts
+const term = new Terminal({ ... });
+const fit = new FitAddon(); term.loadAddon(fit);
+term.open(el);                 // DOM에 터미널 붙이기
 fit.fit();                     // 크기 계산 → term.cols / term.rows
-const ws = new WebSocket('/ws/term/<이름>?cols=..&rows=..');
+const ws = new WebSocket(wsUrl(`/ws/term/${name}`, { cols: term.cols, rows: term.rows }));
 ws.binaryType = 'arraybuffer';
 ```
 

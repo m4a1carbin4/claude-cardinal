@@ -41,7 +41,7 @@ The CLI talks to tmux and the state files directly; no server needed. The server
 
 `cardinal new <name>` does roughly this:
 
-0. Working directory: by default the fixed workspace `$CARDINAL_WORKSPACE` (default `~/.cardinal/workspace`, created if missing). With `--cwd <path>`, that folder (must be an existing directory; relative paths resolve from the caller's location). Either way its realpath is recorded as `cwd` in `meta.json`. The path is validated **before** step 3 removes old records, so a bad path leaves the old records of that name intact.
+0. Working directory: `--cwd <path>` > **the working dir of the Cardinal session (master) that called this CLI** > the fixed workspace `$CARDINAL_WORKSPACE` (default `~/.cardinal/workspace`, created if missing). When a master runs `cardinal new`, the parent is identified from `CARDINAL_SESSION`/`CARDINAL_INSTANCE` in the master's environment (accepted only if that session's `meta.json` instanceId matches), and the worker's `meta.json` records `parent: {name, instanceId}`. With `--cwd <path>`, that folder (must be an existing directory; relative paths resolve from the caller's location). Either way its realpath is recorded as `cwd` in `meta.json`. The path is validated **before** step 3 removes old records, so a bad path leaves the old records of that name intact.
 1. Validate the name (`[A-Za-z0-9][A-Za-z0-9_-]{0,47}`).
    Every later step runs inside a **per-name create lock** (`sessions/.create-<name>.lock`, waits up to 30s), so creations of the same name go one at a time.
    - Inside the lock, check the current session list: a live session with that name → `이미 있는 세션: <name> (<state>)`; a tmux session of that name without Cardinal records → `이미 있는 tmux 세션`. A name with only a dead session's records is re-created.
@@ -66,7 +66,8 @@ When claude exits, the tmux session goes away with it.
 ### Working directory and record locations
 
 - **Record locations are always fixed**: `meta.json` (`$CARDINAL_HOME/sessions/<name>/`) and the hook dir (`$CARDINAL_HOME/hooks/<instanceId>/`) don't depend on the working directory, and they're all the server looks at. No Cardinal files are created in the working directory.
-- **The working directory is per session**: the fixed workspace by default, changeable with `--cwd` (API: `cwd`, absolute paths only).
+- **The working directory is per session**: the fixed workspace by default, changeable with `--cwd` (API: `cwd`, absolute paths only). Workers created by a master use the master's folder when `--cwd` isn't given (already trusted, so no trust dialog).
+- When the server calls the CLI it removes `CARDINAL_SESSION`/`CARDINAL_INSTANCE`/`CARDINAL_ROLE`, so sessions created via the web/API don't inherit a folder even if the server was started inside a Cardinal session.
 - claude writes transcripts to `~/.claude/projects/<working dir path with every non-alphanumeric char replaced by '-'>/<session ID>.jsonl` (under `CLAUDE_CONFIG_DIR` if set). Cardinal computes this from `meta.json`'s `cwd` (realpath) and the current session ID reported by hooks (`transcriptPath()` in `src/paths.ts`), so it works with per-session folders, symlinked paths like `/tmp`, and after the session is gone.
 
 ### Trust dialog (first use of a working directory)
@@ -132,6 +133,8 @@ If tmux is dead but no hook fired, status queries report `ended` anyway.
 When a human presses Esc, no `Stop` hook fires and the state stays at `busy`. That turn now belongs to the human, so Cardinal steps back and **leaves it to the human**.
 
 - Detection: look at the end of the transcript (last 512KB). If `[Request interrupted by user]` (or `… for tool use]` during a tool) comes after the last human input and is later than the hook state, the turn was interrupted.
+- **Interrupt before any response**: pressing Esc before a single token of reply leaves **no** interrupt marker in the transcript, and Claude Code puts the prompt back into the input box (measured). So the screen is checked too: while working, the bottom line shows `esc to interrupt` (`esc to…` when narrow). If the state has been `busy` for over 3s, the bottom 3 lines lack it, and 0.8s later no new hook has fired and it's still missing, the turn was interrupted. Below 60 columns the hint can be cut off, so the screen check is skipped (better to skip than misjudge). Polling 12 times during a normal 10s task gave 0 false positives.
+- **Clearing the restored prompt**: an interrupt found via the screen also records `restoredInput: true`. The next `send` clears the input box before pasting (`C-u` clears only one line, so it repeats with `BSpace` to join the line above). Without this, the restored prompt and the new message merge into one prompt.
 - Handling: the state is treated as `idle` + event `Interrupted` + "사람이 중단함 (Esc)". The CLI also writes it to `state.json` when it looks (not if a hook wrote something newer meanwhile). The server's collector applies the same rule to the DB, so the web UI shows it even if nobody runs the CLI.
 - Effect: a waiting `send --wait` ends right away with `interrupted: true` plus the reply up to the interrupt (measured: within 1s of Esc). The next `send` goes straight in (previously the idle wait blocked it up to 600s). `auto_reply` is not sent and the delivery records "사람이 중단함 (Esc) → 자동 답장 안 함". `report` shows phase `interrupted`.
 
@@ -237,7 +240,7 @@ cardinal status <name> [--json]
 cardinal send <name> <text|-> [--wait] [--timeout SEC] [--no-enter] [--force]
 cardinal keys <name> <key...>
 cardinal wait <name> [--timeout SEC]
-cardinal screen <name> [--lines N]
+cardinal screen <name> [--lines N]          # Claude Code uses the alternate screen, so tmux keeps almost no scrollback
 cardinal report <name> [--tools] [--json]
 cardinal last <name>
 cardinal attach <name>

@@ -4,14 +4,16 @@
 
 > This started as a Node server (node-pty) and now runs in the Python server (`ptyprocess`). The mechanism is exactly the same.
 
-The question: the server only relays bytes over a WebSocket, so how does `index.html` turn that into a live tmux screen?
+The question: the server only relays bytes over a WebSocket, so how does the web page turn that into a live tmux screen?
+
+> The web UI started as a single `index.html` and is now `web/` (Vite + React + TypeScript). The terminal part is `web/src/components/TerminalView.tsx`. Same mechanism.
 
 Short answer: **the server never builds a screen.** It hands tmux a pseudo-terminal (pty) so tmux believes it's attached to a real terminal, then forwards the raw bytes coming out of it (text + ANSI control codes) straight to the browser. Interpreting those bytes and drawing the screen is done in the browser by **xterm.js**, a terminal emulator written in JS. It does the same job iTerm or Terminal.app would do, just inside a web page.
 
 ## Big picture
 
 ```
- browser (index.html)                     cardinal-server (python)                tmux
+ browser (web UI)                         cardinal-server (python)                tmux
 ┌───────────────────────┐   WebSocket   ┌────────────────────────┐   pty    ┌──────────────────────────┐
 │ xterm.js              │◀── binary ────│ ptyprocess             │◀────────│ tmux client              │
 │  · parse bytes        │   (output)    │  └ tmux attach-session │         │ (attach-session process) │
@@ -51,7 +53,7 @@ The client sees `TERM=xterm-256color` and draws using xterm-style control codes.
 
 ### xterm.js
 
-A browser terminal emulator library, loaded by `index.html` from a CDN (`server/cardinal_server/static/index.html:66-67`).
+A browser terminal emulator library, bundled by the web UI from npm (`@xterm/xterm`, `@xterm/addon-fit`) and loaded only when the terminal tab opens (`lazy` in `web/src/components/SessionView.tsx`).
 
 - Parses ANSI/VT control codes from incoming bytes, keeps an internal character grid (rows × cols, with color/attributes per cell) and renders it.
 - Turns keyboard input into the bytes a terminal would send (`↑` → `ESC [ A`, `Enter` → `\r`, `Ctrl+C` → `0x03`).
@@ -83,20 +85,20 @@ The queries in the middle (`\e[c` etc.) are answered by xterm.js immediately via
 
 ### 1. Opening the page
 
-1. `GET /` → the server returns `static/index.html` as-is (`index` in `server/cardinal_server/app.py`).
+1. `GET /` → the server returns the web UI build `web/dist/index.html` (`index` in `server/cardinal_server/app.py`); JS/CSS under `/assets/…`.
 2. The browser fetches xterm.js and FitAddon from the CDN.
-3. It connects to the `/ws/events` WebSocket for the session list (`static/index.html:95-96`). That's a separate status channel, unrelated to the terminal.
+3. It connects to the `/ws/events` WebSocket for the session list (`web/src/App.tsx`; reconnects via `useJsonSocket` in `web/src/hooks.ts`). That's a separate status channel, unrelated to the terminal.
 
 ### 2. Clicking a session → attaching
 
-Browser (`static/index.html:107-119`):
+Browser (`web/src/components/TerminalView.tsx:19-38`):
 
-```js
-term = new Terminal({...});
-fit = new FitAddon.FitAddon(); term.loadAddon(fit);
-term.open($('term'));          // mount the terminal in the DOM
+```ts
+const term = new Terminal({ ... });
+const fit = new FitAddon(); term.loadAddon(fit);
+term.open(el);                 // mount the terminal in the DOM
 fit.fit();                     // compute size → term.cols / term.rows
-const ws = new WebSocket('/ws/term/<name>?cols=..&rows=..');
+const ws = new WebSocket(wsUrl(`/ws/term/${name}`, { cols: term.cols, rows: term.rows }));
 ws.binaryType = 'arraybuffer';
 ```
 
