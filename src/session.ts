@@ -42,7 +42,7 @@ function hookSettings(dir: string) {
   };
 }
 
-// Bash 도구는 사용자 셸 프로필로 PATH를 다시 잡아서 tmux -e PATH가 안 먹음 → 프롬프트에 절대경로 박음
+// Bash 도구는 사용자 셸 프로필로 PATH를 다시 잡아서 세션에 넣어준 PATH가 안 먹음 → 프롬프트에 절대경로 박음
 const CLI = shq(path.join(ROOT, 'bin', 'cardinal'));
 
 const COMMON_PROMPT = (name: string, role: Role) => `
@@ -79,6 +79,7 @@ export interface CreateOptions {
 
 // 처음 쓰는 폴더에서 claude 가 띄우는 "이 폴더를 신뢰하냐" 다이얼로그
 const TRUST_PROMPT_RE = /trust this folder/i;
+const TRUST_YES_SELECTED_RE = /❯\s*(?:\d\.\s*)?Yes, I trust/;
 const TRUST_WAIT_MS = 20_000;
 
 // 작업 폴더 결정. 기록을 지우기 전에 검사해야 잘못된 경로 때문에 이전 세션 기록이 날아가지 않음.
@@ -93,8 +94,12 @@ function resolveCwd(cwd?: string): string {
   return fs.realpathSync(abs);
 }
 
+// tmux 가 기본 셸(-c)로 돌릴 명령 문자열. 인자마다 작은따옴표로 감쌈 (sh/bash/zsh/fish 공통)
+const shellQuote = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
+const shellCommand = (argv: string[]) => argv.map((a, i) => (i < 2 ? a : shellQuote(a))).join(' ');
+
 // 이 CLI 를 부른 게 카디널 세션 안(예: 마스터의 Bash 도구)이면 그 세션.
-// tmux -e 로 넣어준 CARDINAL_SESSION/INSTANCE 가 남아 있음. 같은 이름으로 다시 만들어진 세션과 헷갈리지 않게
+// 세션을 띄울 때 env 로 넣어준 CARDINAL_SESSION/INSTANCE 가 남아 있음. 같은 이름으로 다시 만들어진 세션과 헷갈리지 않게
 // meta 의 instanceId 까지 맞아야 인정
 function callerSession(): SessionMeta | undefined {
   const name = process.env.CARDINAL_SESSION;
@@ -111,10 +116,14 @@ async function acceptTrust(name: string, t: string): Promise<boolean> {
     const st = await getStatus(name);
     if (!st.alive || st.state !== 'starting') return false;
     if (st.trustPrompt) {
+      // 다이얼로그가 그려진 직후엔 키를 아직 안 받아서 Down 이 씹히고 Enter 만 먹으면 기본값 "No, exit" 로 claude 가 꺼짐.
+      // 그래서 커서(❯)가 "Yes" 줄에 온 걸 화면으로 확인한 뒤에만 Enter
+      const screen = await tmux.capturePane(t).catch(() => '');
+      if (TRUST_YES_SELECTED_RE.test(screen)) {
+        await tmux.sendKeys(t, 'Enter');
+        return true;
+      }
       await tmux.sendKeys(t, 'Down');
-      await sleep(300);
-      await tmux.sendKeys(t, 'Enter');
-      return true;
     }
     await sleep(300);
   }
@@ -190,12 +199,17 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
       '-s', t,
       '-c', cwd,
       '-x', '200', '-y', '50',
-      '-e', `CARDINAL_SESSION=${name}`,
-      '-e', `CARDINAL_INSTANCE=${instanceId}`,
-      '-e', `CARDINAL_ROLE=${role}`,
-      '-e', `CARDINAL_HOME=${CARDINAL_HOME}`,
-      '-e', `PATH=${path.join(ROOT, 'bin')}:${process.env.PATH ?? ''}`,
-      '--', ...argv,
+      // 환경변수는 new-session -e 대신 env 로 넣음 (-e 는 tmux 3.2+ 에만 있음).
+      // 명령도 셸 문자열 하나로: 인자 여러 개를 그대로 실행하는 건 tmux 3.0+ 라서
+      shellCommand([
+        'exec', 'env',
+        `CARDINAL_SESSION=${name}`,
+        `CARDINAL_INSTANCE=${instanceId}`,
+        `CARDINAL_ROLE=${role}`,
+        `CARDINAL_HOME=${CARDINAL_HOME}`,
+        `PATH=${path.join(ROOT, 'bin')}:${process.env.PATH ?? ''}`,
+        ...argv,
+      ]),
     );
   } catch (e: any) {
     // 안 뜬 인스턴스를 가리키는 meta/훅 폴더가 남지 않게 롤백

@@ -53,10 +53,11 @@ The CLI talks to tmux and the state files directly; no server needed. The server
 4. Launch tmux:
    ```
    tmux new-session -d -s cardinal-<name> -c <workspace> -x 200 -y 50 \
-     -e CARDINAL_SESSION=<name> -e CARDINAL_INSTANCE=<instanceId> -e CARDINAL_ROLE=<role> -e CARDINAL_HOME=... -e PATH=<repo>/bin:$PATH \
-     -- claude --session-id <uuid> --name <name> --settings '<hooks JSON>' \
-               --append-system-prompt '<role prompt>' [claude args...] [initial prompt]
+     "exec env CARDINAL_SESSION=<name> CARDINAL_INSTANCE=<instanceId> CARDINAL_ROLE=<role> CARDINAL_HOME=... PATH=<repo>/bin:\$PATH \
+        'claude' '--session-id' '<uuid>' '--name' '<name>' '--settings' '<hooks JSON>' \
+        '--append-system-prompt' '<role prompt>' [claude args...] [initial prompt]"
    ```
+   The command is a single string that tmux's default shell runs with `-c`. Every argument is single-quoted, so quotes, `$`, backticks and newlines pass through unchanged. Environment variables go through `env` rather than `new-session -e` because `-e` only exists in tmux 3.2+ (older versions fail with `unknown option -- e`). With `exec`, the pane process is claude itself.
 5. Set `window-size latest` so the most recently active client decides the window size.
 
 If the tmux launch in step 4 fails, the `meta.json` and hook dir from step 3 are removed and it ends with `tmux 세션 생성 실패: <tmux error>` (no record left pointing at an instance that never started).
@@ -77,6 +78,7 @@ claude shows a "do you trust this folder" dialog in a folder it hasn't seen. Unt
 - **Detection**: when the state is `starting`, the screen is checked for that dialog → `trustPrompt: true` + detail `작업 폴더 신뢰 다이얼로그 대기 (<path>) — cardinal keys <name> Down Enter`.
 - **No waiting**: only a human (or `--trust`) can clear it, so `new --wait`/`wait` return right away (`new --wait` exits 1 with a hint) and `send` is rejected immediately. Server deliveries fail at once with the reason instead of sitting `pending` for 600s.
 - **`--trust`** (API `trust: true`): if the dialog appears during creation, choose "Yes, I trust this folder" (waits up to 20s, inside the create lock). Only when explicitly given.
+  - `Enter` is pressed only after the screen shows the cursor (`❯`) on the "Yes" line; otherwise `Down` is pressed again. Right after the dialog is drawn it doesn't take keys yet, so the old way of sending `Down` and `Enter` immediately could lose `Down` and pick the default "No, exit", which quit claude (3 out of 3 times on Claude Code 2.1.309).
 - Once trusted, claude remembers the folder. The default workspace also shows it once on first use.
 
 ### Hook injection

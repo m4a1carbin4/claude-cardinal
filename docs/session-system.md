@@ -53,10 +53,11 @@ CLI는 서버 없이 tmux랑 파일만 직접 만짐. 서버(`server/`, Python)�
 4. tmux 실행:
    ```
    tmux new-session -d -s cardinal-<이름> -c <작업 폴더> -x 200 -y 50 \
-     -e CARDINAL_SESSION=<이름> -e CARDINAL_INSTANCE=<instanceId> -e CARDINAL_ROLE=<role> -e CARDINAL_HOME=... -e PATH=<repo>/bin:$PATH \
-     -- claude --session-id <uuid> --name <이름> --settings '<훅 JSON>' \
-               --append-system-prompt '<역할 프롬프트>' [claude 인자...] [첫 프롬프트]
+     "exec env CARDINAL_SESSION=<이름> CARDINAL_INSTANCE=<instanceId> CARDINAL_ROLE=<role> CARDINAL_HOME=... PATH=<repo>/bin:\$PATH \
+        'claude' '--session-id' '<uuid>' '--name' '<이름>' '--settings' '<훅 JSON>' \
+        '--append-system-prompt' '<역할 프롬프트>' [claude 인자...] [첫 프롬프트]"
    ```
+   명령은 tmux 기본 셸이 `-c`로 돌리는 문자열 하나. 인자는 전부 작은따옴표로 감싸서 따옴표·`$`·백틱·줄바꿈이 그대로 감. 환경변수를 `new-session -e`가 아니라 `env`로 넣는 건 `-e`가 tmux 3.2+에만 있어서 (그 전 버전은 `unknown option -- e`로 실패). `exec`라 pane 프로세스는 바로 claude.
 5. `window-size latest` 설정 → 여러 군데서 붙어도 마지막에 만진 쪽 크기 따라감.
 
 4번 tmux 실행이 실패하면 3번에서 쓴 `meta.json`과 훅 폴더를 지우고 `tmux 세션 생성 실패: <tmux 에러>`로 끝냄 (안 뜬 인스턴스를 가리키는 기록이 안 남게).
@@ -77,6 +78,7 @@ claude는 처음 보는 폴더에서 "이 폴더를 신뢰하냐" 다이얼로�
 - **감지**: 상태가 `starting`이면 화면에 그 다이얼로그가 떠 있는지 확인해서 `trustPrompt: true` + detail `작업 폴더 신뢰 다이얼로그 대기 (<경로>) — cardinal keys <이름> Down Enter`.
 - **기다리지 않음**: 사람(또는 `--trust`)이 넘겨야 풀리니까 `new --wait`/`wait`는 바로 돌아오고(`new --wait`는 안내와 함께 exit 1), `send`는 바로 거부함. 서버 전달도 600초 `pending` 대신 즉시 `failed` + 이유.
 - **`--trust`** (API `trust: true`): 만들 때 다이얼로그가 뜨면 "Yes, I trust this folder"로 넘김 (최대 20초 기다림, 생성 락 안에서). 명시적으로 줄 때만 동작.
+  - 커서(`❯`)가 "Yes" 줄에 온 걸 화면으로 확인한 뒤에만 `Enter`, 아니면 `Down`을 다시 누름. 다이얼로그가 그려진 직후엔 키를 아직 안 받아서, 예전처럼 `Down`·`Enter`를 바로 보내면 `Down`이 씹히고 기본값 "No, exit"가 선택돼 claude가 꺼졌음 (Claude Code 2.1.309에서 3번 중 3번).
 - 한 번 신뢰한 폴더는 claude가 기억해서 다음부턴 안 뜸. 기본 워크스페이스도 처음 한 번은 뜸.
 
 ### 훅 주입
