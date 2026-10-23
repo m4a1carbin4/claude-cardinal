@@ -79,6 +79,17 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 필요한 거: tmux, node 22+, pnpm, claude, (서버) python 3.12+ / uv, (웹 UI) 같은 node/pnpm
 
 ```sh
+./install.sh                      # 도구 확인 → CLI·서버·웹 UI 빌드 → ~/.local/bin/cardinal 연결
+./install.sh --bin-dir DIR        # 연결 위치 바꾸기 (--no-link, --no-web 도 있음)
+./launch.sh                       # 내부 서버(127.0.0.1:7878) + 웹 UI http://127.0.0.1:5173
+./launch.sh --host 0.0.0.0 -p 8080   # 웹 UI 주소/포트 (밖에 열 땐 CARDINAL_TOKEN 권장)
+```
+
+`launch.sh`는 서버를 127.0.0.1 에만 띄우고 웹 UI(vite)가 `/api`, `/ws`를 서버로 넘김. 이미 떠 있는 서버가 있으면 그걸 쓰고 끝날 때도 안 끔. `--server-port`, `--dev`(개발 모드), `--rebuild`도 있음.
+
+수동으로 하려면:
+
+```sh
 pnpm install && pnpm build
 ln -s "$PWD/bin/cardinal" ~/.local/bin/cardinal   # 선택. PATH 어딘가에
 ```
