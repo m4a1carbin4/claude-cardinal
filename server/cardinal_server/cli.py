@@ -24,14 +24,15 @@ class Cli:
         env = {k: v for k, v in os.environ.items() if k not in ("CARDINAL_SESSION", "CARDINAL_INSTANCE", "CARDINAL_ROLE")}
         self.env = {**env, "CARDINAL_HOME": str(settings.home)}
 
-    async def run(self, *args: str, stdin: str | None = None, timeout: float | None = 60) -> str:
+    async def run(self, *args: str, stdin: str | None = None, timeout: float | None = 60,
+                  env: dict[str, str] | None = None) -> str:
         proc = await asyncio.create_subprocess_exec(
             str(self.settings.cli),
             *args,
             stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=self.env,
+            env={**self.env, **(env or {})},
         )
         try:
             out, err = await asyncio.wait_for(proc.communicate(stdin.encode() if stdin is not None else None), timeout)
@@ -48,7 +49,7 @@ class Cli:
     # 자주 쓰는 것들
 
     async def new(self, name: str, role: str = "worker", prompt: str | None = None, claude_args: list[str] | None = None,
-                  cwd: str | None = None, trust: bool = False):
+                  cwd: str | None = None, trust: bool = False, parent: dict | None = None):
         args = ["new", name, "--role", role]
         if prompt:
             args += ["--prompt", prompt]
@@ -59,7 +60,12 @@ class Cli:
         args += ["--json"]
         if claude_args:
             args += ["--", *claude_args]
-        return json.loads(await self.run(*args))
+        # 서버가 만드는 세션: 카디널 MCP 를 이 서버로 붙이게 주소를 알려줌.
+        # 부모(마스터 도구로 만든 워커)는 CLI 가 env 로 받아 meta.parent 에 적음
+        env = {"CARDINAL_SERVER_URL": self.settings.url}
+        if parent:
+            env |= {"CARDINAL_PARENT_NAME": parent["name"], "CARDINAL_PARENT_ID": parent["id"]}
+        return json.loads(await self.run(*args, env=env))
 
     async def send(self, name: str, text: str, *, wait: bool = False, timeout_s: int | None = None,
                    submit: bool = True, force: bool = False, now: bool = False,

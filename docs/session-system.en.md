@@ -8,9 +8,11 @@ Groundwork before Cardinal proper. One Claude Code session = one tmux session, d
 
 ```
  human (terminal)      browser / external         another claude session (master)
-      │                      │                              │
-  cardinal CLI      cardinal-server (Python)      cardinal CLI (via Bash tool)
-      └──────────┬───────────┴──────────────────────────────┘
+      │                      │                              │ mcp__cardinal__* (/mcp)
+      │                      ▼                              │  (sessions started without a server: CLI via Bash)
+      │            cardinal-server (Python) ◀───────────────┘
+  cardinal CLI               │ calls the cardinal CLI
+      └──────────┬───────────┘
                  ▼
           src/session.ts   ← shared create / query / control logic
             │         │
@@ -53,11 +55,13 @@ The CLI talks to tmux and the state files directly; no server needed. The server
 4. Launch tmux:
    ```
    tmux new-session -d -s cardinal-<name> -c <workspace> -x 200 -y 50 \
-     "exec env CARDINAL_SESSION=<name> CARDINAL_INSTANCE=<instanceId> CARDINAL_ROLE=<role> CARDINAL_HOME=... PATH=<repo>/bin:\$PATH \
-        'claude' '--session-id' '<uuid>' '--name' '<name>' '--settings' '<hooks JSON>' \
+     "exec env CARDINAL_SESSION=<name> CARDINAL_INSTANCE=<instanceId> CARDINAL_ROLE=<role> CARDINAL_HOME=... \
+        MCP_TOOL_TIMEOUT=3700000 PATH=<repo>/bin:\$PATH \
+        'claude' ['--mcp-config' '<Cardinal MCP JSON>' '--allowedTools' 'mcp__cardinal'] \
+        '--session-id' '<uuid>' '--name' '<name>' '--settings' '<hooks JSON>' \
         '--append-system-prompt' '<role prompt>' [claude args...] [initial prompt]"
    ```
-   The command is a single string that tmux's default shell runs with `-c`. Every argument is single-quoted, so quotes, `$`, backticks and newlines pass through unchanged. Environment variables go through `env` rather than `new-session -e` because `-e` only exists in tmux 3.2+ (older versions fail with `unknown option -- e`). With `exec`, the pane process is claude itself.
+   The `[...]` part is only there when the Cardinal server is running ([Cardinal MCP](mcp.en.md#attaching-it-to-sessions)). The command is a single string that tmux's default shell runs with `-c`. Every argument is single-quoted, so quotes, `$`, backticks and newlines pass through unchanged. Environment variables go through `env` rather than `new-session -e` because `-e` only exists in tmux 3.2+ (older versions fail with `unknown option -- e`). With `exec`, the pane process is claude itself.
 5. Set `window-size latest` so the most recently active client decides the window size.
 
 If the tmux launch in step 4 fails, the `meta.json` and hook dir from step 3 are removed and it ends with `tmux 세션 생성 실패: <tmux error>` (no record left pointing at an instance that never started).
@@ -69,6 +73,7 @@ When claude exits, the tmux session goes away with it.
 - **Record locations are always fixed**: `meta.json` (`$CARDINAL_HOME/sessions/<name>/`) and the hook dir (`$CARDINAL_HOME/hooks/<instanceId>/`) don't depend on the working directory, and they're all the server looks at. No Cardinal files are created in the working directory.
 - **The working directory is per session**: the fixed workspace by default, changeable with `--cwd` (API: `cwd`, absolute paths only). Workers created by a master use the master's folder when `--cwd` isn't given (already trusted, so no trust dialog).
 - When the server calls the CLI it removes `CARDINAL_SESSION`/`CARDINAL_INSTANCE`/`CARDINAL_ROLE`, so sessions created via the web/API don't inherit a folder even if the server was started inside a Cardinal session.
+- When created from a master tool (`session_new`), the server passes `CARDINAL_PARENT_NAME`/`CARDINAL_PARENT_ID` and the CLI writes them to `meta.parent` (the working dir is passed separately with `--cwd`).
 - claude writes transcripts to `~/.claude/projects/<working dir path with every non-alphanumeric char replaced by '-'>/<session ID>.jsonl` (under `CLAUDE_CONFIG_DIR` if set). Cardinal computes this from `meta.json`'s `cwd` (realpath) and the current session ID reported by hooks (`transcriptPath()` in `src/paths.ts`), so it works with per-session folders, symlinked paths like `/tmp`, and after the session is gone.
 
 ### Trust dialog (first use of a working directory)
@@ -109,10 +114,15 @@ Every session (= one claude process) has **its own hook dir**. The hook writes o
 
 ### Role prompts
 
-- Common: "you are session `<name>` launched by Cardinal, level `<role>`", plus the absolute CLI path.
-- Master only: when splitting work, spawn workers with `cardinal new ... --wait` instead of built-in subagents/workflows, unless the user asks otherwise. Includes send/ls/status/report/screen/keys/kill usage.
+The model drives Cardinal through exactly one of two paths.
 
-Why the absolute CLI path: claude's Bash tool rebuilds PATH from the user's shell profile, so tmux `-e PATH` doesn't survive. In testing, the master couldn't find `cardinal` until this was fixed.
+- **Server running (default)**: Cardinal MCP (`mcp__cardinal__*`) only. The prompt says "drive Cardinal only via MCP tools; the CLI is for humans, don't call it through Bash", and external events are answered via `mcp__cardinal__reply`. Masters handle workers with `session_new`/`session_send`/`session_wait`/`session_report`/…; workers don't see master tools at all. Details in [Cardinal MCP](mcp.en.md).
+- **Started without a server, or `--no-mcp`**: the old CLI way.
+  - Common: "you are session `<name>` launched by Cardinal, level `<role>`", plus the absolute CLI path.
+  - Master only: when splitting work, spawn workers with `cardinal new ... --wait` instead of built-in subagents/workflows, unless the user asks otherwise. Includes send/ls/status/report/screen/keys/kill usage.
+  - Why the absolute CLI path: claude's Bash tool rebuilds PATH from the user's shell profile, so tmux `-e PATH` doesn't survive. In testing, the master couldn't find `cardinal` until this was fixed.
+
+Which one a session uses is `mcp` in `meta.json` (DB `sessions.mcp`, "카디널 도구" in the web UI session info).
 
 ## State
 
@@ -236,11 +246,12 @@ Reporting mid-turn gives the partial reply so far, marked as still in progress. 
 ## CLI
 
 ```
-cardinal new <name> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [-- claude args...]
+cardinal new <name> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [--no-mcp] [-- claude args...]
 cardinal ls [--json]
 cardinal status <name> [--json]
 cardinal send <name> <text|-> [--wait] [--timeout SEC] [--no-enter] [--force]
 cardinal keys <name> <key...>
+cardinal mcp-reconnect <name>               # reattach the Cardinal MCP (the server calls this when it restarts)
 cardinal wait <name> [--timeout SEC]
 cardinal screen <name> [--lines N]          # Claude Code uses the alternate screen, so tmux keeps almost no scrollback
 cardinal report <name> [--tools] [--json]

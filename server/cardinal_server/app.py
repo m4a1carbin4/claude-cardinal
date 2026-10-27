@@ -31,7 +31,8 @@ from .db import DB
 from .ingest import Ingestor
 from .router import Router
 from .running import running_elsewhere
-from .sdk import SdkError, SdkManager, redact_options
+from .mcp_server import CardinalMcp
+from .sdk import SdkError, SdkManager, redact_options, unredact
 from .sessions import SessionError, Sessions
 
 log = logging.getLogger("cardinal")
@@ -131,6 +132,9 @@ class SdkOptionsIn(BaseModel):
     setting_sources: list[Literal["user", "project", "local"]] | None = None
     question_timeout_s: int | None = None  # 질문/권한에 이 시간 안에 답이 없으면 "스스로 판단" 으로 돌려줌
     resume_on_start: bool = False  # 서버가 다시 뜰 때 이 세션을 이어서 자동으로 띄움
+    # Claude in Chrome (브라우저 조작 MCP). None 이면 ~/.claude.json 의 claudeInChromeDefaultEnabled 를 따름
+    # (터미널 claude 는 그 값을 보지만 SDK 의 비대화 모드는 안 봐서 --chrome 을 직접 붙여야 함)
+    chrome: bool | None = None
 
 
 def check_sdk_options(o: SdkOptionsIn) -> dict:
@@ -164,7 +168,7 @@ class SessionIn(BaseModel):
 
 class RestartIn(BaseModel):
     resume: bool = True  # False 면 새 대화로
-    sdk: dict[str, Any] | None = None  # 바꿀 sdk 옵션만 (나머지는 그대로)
+    sdk: dict[str, Any] | None = None  # 바꿀 sdk 옵션만 (나머지는 그대로). env/헤더 값이 *** 면 원래 값 유지
 
 
 class AnswerIn(BaseModel):
@@ -221,7 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def sessions_changed() -> None:
         t = asyncio.get_running_loop().create_task(
-            events_hub.publish({"type": "sessions", "sessions": db.sessions()})
+            events_hub.publish({"type": "sessions", "sessions": [pub(x) for x in db.sessions()]})
         )
         bg_tasks.add(t)
         t.add_done_callback(bg_tasks.discard)
@@ -232,8 +236,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     sessions = Sessions(settings, db, cli, ingestor, sdk_mgr)
     router = Router(settings, db, sessions, channel_hub.publish)
     sdk_mgr.router, sdk_mgr.facade = router, sessions
+    # 세션 안 모델이 카디널을 다루는 MCP (tmux·SDK 공통). SDK 세션은 여기 주소와 키로 붙음
+    cmcp = CardinalMcp(settings, db, sessions, router, ingestor)
+    sdk_mgr.mcp_secret = cmcp.secret
     local = LocalAdapter(channel_hub.publish)
     router.add_adapter(local)
+
+    async def reconnect_tmux_mcp() -> None:
+        rows = [r for r in db.sessions() if r["backend"] == "tmux" and r["alive"] and r.get("mcp")]
+        if not rows:
+            return
+        await sdk_mgr.wait_serving()
+
+        async def one(name: str) -> None:
+            try:
+                # 작업 중이면 끝날 때까지 기다렸다가 침 (send 와 같은 줄)
+                await cli.run("mcp-reconnect", name, timeout=700)
+                log.info("카디널 MCP 다시 붙임: %s", name)
+            except CliError as e:
+                log.warning("카디널 MCP 다시 붙이기 실패: %s (%s)", name, e)
+
+        await asyncio.gather(*(one(r["name"]) for r in rows))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -243,6 +266,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await ingestor.sync()
         await sdk_mgr.startup()
         ingest_task = asyncio.create_task(ingestor.run())
+        mcp_ctx = cmcp.run()
+        await mcp_ctx.__aenter__()
+        # resume_on_start 세션은 서버가 요청을 받기 시작한 뒤에 띄움 (카디널 MCP 에 붙어야 해서)
+        resume_task = asyncio.create_task(sdk_mgr.resume_when_serving())
+        # 살아있는 tmux 세션의 claude 는 서버가 꺼질 때 끊긴 카디널 MCP 를 스스로 안 붙음 → 하나씩 /mcp reconnect
+        reconnect_task = asyncio.create_task(reconnect_tmux_mcp())
         await local.start(router.handle)
         discord = None
         app.state.discord = None
@@ -270,11 +299,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if json.loads(info.read_text()).get("pid") == os.getpid():
                     info.unlink()
             ingest_task.cancel()
+            resume_task.cancel()
+            reconnect_task.cancel()
             await sdk_mgr.shutdown()
+            await mcp_ctx.__aexit__(None, None, None)
             if discord:
                 await discord.stop()
 
     app = FastAPI(title="Cardinal", lifespan=lifespan)
+    # 인증은 MCP 쪽 헤더(세션 키)로 따로 함. 웹 UI 전체 받기(/{path}) 보다 먼저 붙여야 GET 이 안 뺏김
+    app.mount("/mcp", cmcp.app)
     app.state.settings, app.state.db, app.state.router = settings, db, router
 
     # ---------- 인증 ----------
@@ -440,7 +474,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "SDK 모드가 꺼져 있음 (cardinal-server --sdk)")
         patch = None
         if body.sdk:
-            patch = check_sdk_options(SdkOptionsIn(**{**sess.options, **body.sdk}))
+            patch = check_sdk_options(SdkOptionsIn(**{**sess.options, **unredact(body.sdk, sess.options)}))
         try:
             await sdk_mgr.restart(name, resume=body.resume, options=patch)
         except SdkError as e:
@@ -661,7 +695,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.websocket("/ws/events")
     async def ws_events(ws: WebSocket):
         if await ws_auth(ws):
-            await subscribe(ws, events_hub, {"type": "sessions", "sessions": db.sessions()})
+            await subscribe(ws, events_hub, {"type": "sessions", "sessions": [pub(x) for x in db.sessions()]})
 
     @app.websocket("/ws/channel")
     async def ws_channel(ws: WebSocket):

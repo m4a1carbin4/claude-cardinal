@@ -16,7 +16,8 @@ const KEYS: { label: string; keys: string[]; title: string }[] = [
   { label: 'Ctrl+C', keys: ['C-c'], title: '입력 지우기 (빈 입력에서 두 번이면 종료되니 주의)' },
 ];
 
-export function SendPanel({ name }: { name: string }) {
+// sdk: 입력창이 없어서 키·붙여넣기만·tmux 크기 한도가 없음
+export function SendPanel({ name, sdk = false }: { name: string; sdk?: boolean }) {
   const [text, setText] = useState('');
   const [wait, setWait] = useState(true);
   const [timeoutS, setTimeoutS] = useState(900);
@@ -28,7 +29,7 @@ export function SendPanel({ name }: { name: string }) {
   const [result, setResult] = useState<(SendResult & { pasteOnly?: boolean }) | null>(null);
   const [error, setError] = useState('');
   const bytes = byteLength(text);
-  const tooBig = bytes > PASTE_MAX_BYTES;
+  const tooBig = !sdk && bytes > PASTE_MAX_BYTES;
 
   async function send() {
     if (!text.trim() || tooBig) return;
@@ -69,10 +70,12 @@ export function SendPanel({ name }: { name: string }) {
           placeholder="세션에 보낼 지시 (⌘/Ctrl + Enter 로 보내기)"
         />
       </label>
-      <div className={`bytes ${tooBig ? 'err' : ''}`}>
-        {bytes.toLocaleString()} / {PASTE_MAX_BYTES.toLocaleString()} 바이트
-        {tooBig && ' — tmux 한 번 전달 한도 초과. 긴 내용은 파일로 저장하고 경로를 보내세요'}
-      </div>
+      {!sdk && (
+        <div className={`bytes ${tooBig ? 'err' : ''}`}>
+          {bytes.toLocaleString()} / {PASTE_MAX_BYTES.toLocaleString()} 바이트
+          {tooBig && ' — tmux 한 번 전달 한도 초과. 긴 내용은 파일로 저장하고 경로를 보내세요'}
+        </div>
+      )}
       <div className="row wrap">
         <label className="check">
           <input type="checkbox" checked={wait && submit} disabled={!submit} onChange={(e) => setWait(e.target.checked)} /> 턴 끝날 때까지 기다리고 응답 받기
@@ -84,13 +87,15 @@ export function SendPanel({ name }: { name: string }) {
             초
           </label>
         )}
-        <label className="check" title="입력창에 붙여넣기만 하고 Enter 는 안 누름 (아래 Enter 키로 나중에 제출)">
-          <input type="checkbox" checked={!submit} onChange={(e) => setSubmit(!e.target.checked)} /> 붙여넣기만 (Enter 안 누름)
-        </label>
+        {!sdk && (
+          <label className="check" title="입력창에 붙여넣기만 하고 Enter 는 안 누름 (아래 Enter 키로 나중에 제출)">
+            <input type="checkbox" checked={!submit} onChange={(e) => setSubmit(!e.target.checked)} /> 붙여넣기만 (Enter 안 누름)
+          </label>
+        )}
         <label className="check" title="작업 중이어도 기다리지 않고 진행 중인 턴에 끼워넣음">
           <input type="checkbox" checked={now} onChange={(e) => setNow(e.target.checked)} /> 바로 끼워넣기 (--now)
         </label>
-        <label className="check" title="승인 대기 중이어도 보냄 (텍스트가 다이얼로그로 들어감)">
+        <label className="check" title={sdk ? '질문/권한 답을 기다리는 중이어도 보냄' : '승인 대기 중이어도 보냄 (텍스트가 다이얼로그로 들어감)'}>
           <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} /> 강제 (--force)
         </label>
         <span className="spacer" />
@@ -99,33 +104,37 @@ export function SendPanel({ name }: { name: string }) {
         </button>
       </div>
 
-      <div className="section-title">키 보내기</div>
-      <div className="row wrap">
-        {KEYS.map((k) => (
-          <button key={k.label} className="ghost small" title={k.title} onClick={() => keys(k.keys)}>
-            {k.label}
-          </button>
-        ))}
-      </div>
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const ks = customKeys.trim().split(/\s+/).filter(Boolean);
-          if (ks.length) keys(ks).then(() => setCustomKeys(''));
-        }}
-      >
-        <input
-          className="grow"
-          value={customKeys}
-          onChange={(e) => setCustomKeys(e.target.value)}
-          placeholder="tmux 키 직접 입력, 공백으로 구분 (예: C-u   Tab   1   Escape Escape)"
-          aria-label="직접 보낼 키"
-        />
-        <button className="ghost small" disabled={!customKeys.trim()}>
-          키 보내기
-        </button>
-      </form>
+      {!sdk && (
+        <>
+          <div className="section-title">키 보내기</div>
+          <div className="row wrap">
+            {KEYS.map((k) => (
+              <button key={k.label} className="ghost small" title={k.title} onClick={() => keys(k.keys)}>
+                {k.label}
+              </button>
+            ))}
+          </div>
+          <form
+            className="row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const ks = customKeys.trim().split(/\s+/).filter(Boolean);
+              if (ks.length) keys(ks).then(() => setCustomKeys(''));
+            }}
+          >
+            <input
+              className="grow"
+              value={customKeys}
+              onChange={(e) => setCustomKeys(e.target.value)}
+              placeholder="tmux 키 직접 입력, 공백으로 구분 (예: C-u   Tab   1   Escape Escape)"
+              aria-label="직접 보낼 키"
+            />
+            <button className="ghost small" disabled={!customKeys.trim()}>
+              키 보내기
+            </button>
+          </form>
+        </>
+      )}
 
       {error && <div className="alert err">{error}</div>}
       {result && (
@@ -184,6 +193,7 @@ export function ReportPanel({ name, version }: { name: string; version: number }
         <span className="badge">{PHASE[report.phase]}</span>
         {report.status.trustPrompt && <span className="badge warn">신뢰 다이얼로그 대기</span>}
         {report.status.detail && <span className="muted small">{report.status.detail}</span>}
+        {report.pending && report.pending.length > 0 && <span className="badge warn">답 기다리는 질문 {report.pending.length} — 대화 탭에서</span>}
         <span className="spacer" />
         <label className="check small">
           <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} /> 도구 호출
@@ -212,7 +222,18 @@ export function ReportPanel({ name, version }: { name: string; version: number }
           )}
           <div className="section-title">
             응답 <span className="muted small">{clock(t.endedAt)}</span>
-            {t.interrupted ? <span className="badge info">중단됨, 부분 응답</span> : !t.complete && <span className="badge warn">진행 중, 부분 응답</span>}
+            {t.interrupted ? (
+              <span className="badge info">중단됨, 부분 응답</span>
+            ) : t.result?.is_error ? (
+              <span className="badge err">오류 · {t.result.terminal_reason ?? t.result.subtype}</span>
+            ) : (
+              !t.complete && <span className="badge warn">진행 중, 부분 응답</span>
+            )}
+            {t.result && (
+              <span className="muted small">
+                {(t.result.duration_ms / 1000).toFixed(1)}초{t.result.total_cost_usd != null ? ` · $${t.result.total_cost_usd.toFixed(4)}` : ''}
+              </span>
+            )}
           </div>
           <pre className="reply">{t.texts.length ? t.texts.join('\n\n') : '(텍스트 응답 없음)'}</pre>
         </>

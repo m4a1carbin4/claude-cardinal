@@ -5,7 +5,7 @@
 - send 는 tmux 쪽과 같은 규칙: 세션별로 한 줄로 세우고, 작업 중이면 idle 될 때까지 기다림
   (작업 중에 넣으면 SDK 도 진행 중인 턴에 끼워 넣어서 응답이 하나로 합쳐짐. 실측)
 - 질문(AskUserQuestion)·권한 확인은 can_use_tool 로 받아서 "pending" 으로 들고 있다가 API 로 답을 받음 (그동안 waiting)
-- 카디널 도구(reply, 세션 제어)는 프로세스 안 MCP 서버(mcp__cardinal__*)로 줌. Bash 로 cardinal CLI 를 부를 필요 없음
+- 카디널 도구(reply, 세션 제어)는 서버의 카디널 MCP(/mcp/worker|master, mcp_server.py)로 줌. tmux 세션과 같은 도구
 """
 
 import asyncio
@@ -33,13 +33,11 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
     UserMessage,
-    create_sdk_mcp_server,
-    tool,
 )
 
-from .channel.base import OutboundFile
 from .config import REPO_ROOT, Settings
 from .db import DB, now
+from .mcp_server import mcp_config
 
 log = logging.getLogger("cardinal.sdk")
 
@@ -47,8 +45,6 @@ log = logging.getLogger("cardinal.sdk")
 ACCEPT_TIMEOUT_S = 15
 # 턴 시작을 알리는 것: 매 query 마다 오는 init 시스템 메시지, UserPromptSubmit 훅
 QUEUE_TIMEOUT_S = 600
-MAX_REPLY_FILES = 10
-MAX_REPLY_FILE_BYTES = 10 * 1024 * 1024
 TOOL_INPUT_CLIP = 300
 HOOK_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop",
                "SubagentStart", "SubagentStop", "PreCompact", "Notification", "PermissionRequest")
@@ -64,11 +60,12 @@ COMMON_PROMPT = """
 """
 
 MASTER_PROMPT = """
-너는 마스터 세션이다. 작업을 나눌 때는 내장 서브 에이전트(Agent 도구) 대신 카디널 도구로 독립 워커 세션을 띄워서 맡겨라.
-- 워커 만들기: `mcp__cardinal__session_new` (name, prompt, wait). 워커는 기본으로 너와 같은 작업 폴더에서 뜬다
-- 지시 추가: `mcp__cardinal__session_send` (name, text, wait=true 면 응답까지 받음)
-- 상태/결과: `mcp__cardinal__session_list`, `mcp__cardinal__session_report` (작업중/완료 + 마지막 턴 응답 전체)
-- 정리: `mcp__cardinal__session_kill`
+너는 마스터 세션이다. 작업을 나눌 때는 내장 서브 에이전트(Agent 도구)나 워크플로 대신 카디널 도구(mcp__cardinal__*)로 독립 워커 세션을 띄워서 맡겨라.
+- 워커 만들기: `session_new` (name, prompt, wait). 기본으로 너와 같은 작업 폴더, 같은 방식으로 뜬다
+- 지시: `session_send` (wait=true 면 응답까지 받음). 오래 걸릴 일은 wait=false 로 보내고 `session_wait`
+- 상태/결과: `session_list`, `session_report` (작업중/완료 + 마지막 턴 응답 전체)
+- 워커가 막히면: tmux 워커는 `session_screen` 으로 보고 `session_keys`, SDK 워커는 `session_answer`
+- 정리: `session_kill`
 사용자가 서브 에이전트를 쓰라고 따로 요청한 경우에만 예외.
 """
 
@@ -108,6 +105,37 @@ def redact_options(opts: dict | None) -> dict:
                 if isinstance(srv.get(key), dict):
                     srv[key] = {k: "***" for k in srv[key]}
     return o
+
+
+def chrome_default_enabled() -> bool:
+    """터미널 claude 와 같게: /chrome 에서 '기본으로 켜기' 한 값 (~/.claude.json 의 claudeInChromeDefaultEnabled)"""
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = Path(base) / ".claude.json" if base else Path.home() / ".claude.json"
+    try:
+        return bool(json.loads(path.read_text()).get("claudeInChromeDefaultEnabled"))
+    except (OSError, ValueError):
+        return False
+
+
+def unredact(patch: dict, old: dict) -> dict:
+    """restart 로 받은 옵션 조각에서 *** (가려서 내보낸 값)는 원래 값으로 되돌림.
+    웹 UI 처럼 가려진 목록을 받아 고쳐 보내는 쪽이 비밀을 몰라도 되게"""
+    p = json.loads(json.dumps(patch))
+
+    def fill(new: Any, orig: Any) -> None:
+        if isinstance(new, dict) and isinstance(orig, dict):
+            for k, v in new.items():
+                if v == "***" and isinstance(orig.get(k), str):
+                    new[k] = orig[k]
+
+    if "env" in p:
+        fill(p["env"], old.get("env"))
+    for name, srv in (p.get("mcp_servers") or {}).items():
+        orig = (old.get("mcp_servers") or {}).get(name) or {}
+        if isinstance(srv, dict):
+            for key in ("env", "headers"):
+                fill(srv.get(key), orig.get(key))
+    return p
 
 
 @dataclasses.dataclass
@@ -227,7 +255,7 @@ class SdkSession:
         if o.get("append_prompt"):
             prompt += "\n" + o["append_prompt"]
         mcp: dict[str, Any] = dict(o.get("mcp_servers") or {})
-        mcp["cardinal"] = cardinal_tools(self)
+        mcp["cardinal"] = mcp_config(self.mgr.settings, self.mgr.mcp_secret, self.id, self.role)
         allowed = list(o.get("allowed_tools") or [])
         # 카디널 도구는 서버가 직접 처리하는 거라 묻지 않음
         allowed.append("mcp__cardinal")
@@ -241,6 +269,8 @@ class SdkSession:
             # Bash 도구에서 cardinal CLI 도 쓸 수 있게 (reply 는 mcp__cardinal__reply 가 기본)
             "PATH": f"{REPO_ROOT / 'bin'}:{os.environ.get('PATH', '')}",
             "CLAUDE_AGENT_SDK_CLIENT_APP": "cardinal",
+            # 카디널 MCP 도구는 워커 응답을 오래 기다릴 수 있음 (session_send wait, session_wait 최대 3600초)
+            "MCP_TOOL_TIMEOUT": "3700000",
         }
         kw: dict[str, Any] = dict(
             cwd=self.cwd,
@@ -260,6 +290,10 @@ class SdkSession:
                     "strict_mcp_config"):
             if o.get(key) is not None:
                 kw[key] = o[key]
+        chrome = o.get("chrome")
+        if chrome is None:
+            chrome = chrome_default_enabled()
+        kw["extra_args"] = {"chrome" if chrome else "no-chrome": None}
         if resume:
             kw["resume"] = resume
         elif fresh_id:
@@ -608,112 +642,6 @@ def phase_of(alive: bool, state: str, event: str | None) -> str:
     return state
 
 
-# ---------- 카디널 도구 (프로세스 안 MCP 서버) ----------
-
-
-def _text(s: str, error: bool = False) -> dict:
-    out: dict[str, Any] = {"content": [{"type": "text", "text": s}]}
-    if error:
-        out["is_error"] = True
-    return out
-
-
-def cardinal_tools(sess: SdkSession):
-    mgr = sess.mgr
-
-    @tool("reply", "외부 채널 이벤트([cardinal:event <ID>])에 답장. files 는 첨부할 로컬 파일 경로 목록 (최대 10개, 각 10MB)",
-          {"type": "object", "properties": {
-              "event_id": {"type": "string"}, "text": {"type": "string"},
-              "files": {"type": "array", "items": {"type": "string"}}},
-           "required": ["event_id", "text"]})
-    async def reply(args: dict) -> dict:
-        files = args.get("files") or []
-        if len(files) > MAX_REPLY_FILES:
-            return _text(f"첨부는 최대 {MAX_REPLY_FILES}개", True)
-        out = []
-        for f in files:
-            p = Path(f) if os.path.isabs(f) else Path(sess.cwd) / f
-            try:
-                if p.stat().st_size > MAX_REPLY_FILE_BYTES:
-                    return _text(f"파일이 너무 큼 (> 10MB): {p}", True)
-                out.append(OutboundFile(p.name, p.read_bytes(), None))
-            except OSError as e:
-                return _text(f"파일을 못 읽음: {p} ({e})", True)
-        if not (args.get("text") or "").strip() and not out:
-            return _text("보낼 텍스트나 파일이 필요", True)
-        try:
-            saved = await mgr.router.reply(args["event_id"], sess.name, args.get("text", ""), out)
-        except Exception as e:
-            return _text(f"답장 실패: {e}", True)
-        return _text(f"답장 보냄 (reply {saved['id']})")
-
-    @tool("session_list", "카디널 세션 목록과 상태", {"type": "object", "properties": {}})
-    async def session_list(args: dict) -> dict:
-        rows = [{k: s[k] for k in ("name", "role", "backend", "state", "alive", "cwd", "parent_name")}
-                for s in mgr.db.sessions()]
-        return _text(json.dumps(rows, ensure_ascii=False, indent=1))
-
-    @tool("session_new", "워커 세션 만들기. cwd 를 안 주면 이 세션의 작업 폴더. wait=true 면 첫 지시의 응답까지 기다림",
-          {"type": "object", "properties": {
-              "name": {"type": "string"}, "prompt": {"type": "string"},
-              "role": {"type": "string", "enum": ["worker", "master"]},
-              "cwd": {"type": "string"}, "backend": {"type": "string", "enum": ["sdk", "tmux"]},
-              "wait": {"type": "boolean"}, "timeout_s": {"type": "integer"}},
-           "required": ["name"]})
-    async def session_new(args: dict) -> dict:
-        try:
-            row = await mgr.facade.create(
-                name=args["name"], role=args.get("role") or "worker", prompt=None,
-                cwd=args.get("cwd") or sess.cwd, backend=args.get("backend") or "sdk",
-                sdk=None, parent={"id": sess.id, "name": sess.name}, trust=True)
-            out: dict[str, Any] = {"created": row.get("name"), "backend": row.get("backend"), "cwd": row.get("cwd")}
-            if args.get("prompt"):
-                res = await mgr.facade.send(args["name"], args["prompt"], wait=bool(args.get("wait")),
-                                            timeout_s=args.get("timeout_s") or 600)
-                out["send"] = res
-        except Exception as e:
-            return _text(f"실패: {e}", True)
-        return _text(json.dumps(out, ensure_ascii=False, indent=1, default=str))
-
-    @tool("session_send", "세션에 지시 보내기. wait=true 면 그 턴의 응답(last)까지 기다림",
-          {"type": "object", "properties": {
-              "name": {"type": "string"}, "text": {"type": "string"},
-              "wait": {"type": "boolean"}, "timeout_s": {"type": "integer"}},
-           "required": ["name", "text"]})
-    async def session_send(args: dict) -> dict:
-        if args["name"] == sess.name:
-            return _text("자기 자신에게는 못 보냄", True)
-        try:
-            res = await mgr.facade.send(args["name"], args["text"], wait=args.get("wait", True),
-                                        timeout_s=args.get("timeout_s") or 600)
-        except Exception as e:
-            return _text(f"실패: {e}", True)
-        return _text(json.dumps(res, ensure_ascii=False, indent=1, default=str))
-
-    @tool("session_report", "세션 결과 보고: 살아있는지, 작업중/완료, 마지막 턴 지시와 응답 전체",
-          {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]})
-    async def session_report(args: dict) -> dict:
-        try:
-            return _text(json.dumps(await mgr.facade.report(args["name"]), ensure_ascii=False, indent=1, default=str))
-        except Exception as e:
-            return _text(f"실패: {e}", True)
-
-    @tool("session_kill", "세션 끝내기 (purge=true 면 기록도 삭제 표시)",
-          {"type": "object", "properties": {"name": {"type": "string"}, "purge": {"type": "boolean"}},
-           "required": ["name"]})
-    async def session_kill(args: dict) -> dict:
-        if args["name"] == sess.name:
-            return _text("자기 자신은 못 끝냄", True)
-        try:
-            await mgr.facade.kill(args["name"], bool(args.get("purge")))
-        except Exception as e:
-            return _text(f"실패: {e}", True)
-        return _text("끝냄")
-
-    return create_sdk_mcp_server("cardinal", tools=[reply, session_list, session_new, session_send,
-                                                    session_report, session_kill])
-
-
 # ---------- 매니저 ----------
 
 
@@ -724,7 +652,9 @@ class SdkManager:
         self.on_change = on_change
         self.sessions: dict[str, SdkSession] = {}
         self.router: Any = None  # app 이 연결 (답장용)
-        self.facade: Any = None  # app 이 연결 (마스터 도구가 tmux 세션도 다루게)
+        self.facade: Any = None  # app 이 연결
+        self.mcp_secret: bytes = b""  # app 이 연결 (카디널 MCP 세션 키 만들 때)
+        self._resume: list[SdkSession] = []
         self._create_locks: dict[str, asyncio.Lock] = {}
         self._changed_pending = False
 
@@ -758,12 +688,32 @@ class SdkManager:
                                            last_event="SessionEnd", detail="서버가 재시작됨 (restart 로 이어서 시작)")
             sess.state, sess.event = "ended", "SessionEnd"
             if (row.get("sdk_options") or {}).get("resume_on_start"):
-                try:
-                    await sess.start(resume=True)
-                    log.info("SDK 세션 이어서 시작: %s", sess.name)
-                except Exception as e:
-                    log.warning("SDK 세션 %s 이어서 시작 실패: %s", sess.name, e)
+                self._resume.append(sess)
         self.on_change()
+
+    async def wait_serving(self) -> None:
+        """이 서버가 요청을 받기 시작할 때까지 (lifespan 시작 단계에선 아직 안 받음)"""
+        host, port = self.settings.url.removeprefix("http://").rsplit(":", 1)
+        for _ in range(120):
+            try:
+                _, w = await asyncio.open_connection(host.strip("[]"), int(port))
+                w.close()
+                return
+            except OSError:
+                await asyncio.sleep(0.25)
+
+    async def resume_when_serving(self) -> None:
+        """resume_on_start 세션 다시 띄우기. 카디널 MCP(이 서버)에 붙어야 해서 서버가 요청을 받기 시작한 뒤에"""
+        if not self._resume:
+            return
+        await self.wait_serving()
+        for sess in self._resume:
+            try:
+                await sess.start(resume=True)
+                log.info("SDK 세션 이어서 시작: %s", sess.name)
+            except Exception as e:
+                log.warning("SDK 세션 %s 이어서 시작 실패: %s", sess.name, e)
+        self._resume = []
 
     async def shutdown(self) -> None:
         await asyncio.gather(*(s.stop("서버 종료") for s in self.sessions.values() if s.alive),

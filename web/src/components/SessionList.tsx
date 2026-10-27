@@ -42,6 +42,7 @@ export function SessionList({
                   <span className="si-name">
                     {s.name}
                     <span className={`role ${s.role}`}>{s.role}</span>
+                    {s.backend === 'sdk' && <span className="role sdk">SDK</span>}
                   </span>
                   <span className="si-sub">
                     {st.label} · {basename(s.cwd)}

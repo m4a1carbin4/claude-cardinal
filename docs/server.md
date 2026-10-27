@@ -1,6 +1,6 @@
 # 카디널 서버 (Python / FastAPI)
 
-[English](server.en.md) · 관련: [세션 시스템](session-system.md), [웹 터미널](web-terminal.md), [SDK 모드](sdk-mode.md) (tmux 없이 서버 안 SDK 세션)
+[English](server.en.md) · 관련: [세션 시스템](session-system.md), [웹 터미널](web-terminal.md), [SDK 모드](sdk-mode.md) (tmux 없이 서버 안 SDK 세션), [카디널 MCP](mcp.md) (세션 안 모델이 카디널을 다루는 길)
 
 CLI 안에 있던 서버(`cardinal serve`)를 `server/`의 Python 서비스로 분리함. 메시지 채널이랑 DB를 붙이려고.
 이 문서는 "요청 하나가 들어와서 어디를 어떤 순서로 지나가는지"를 코드 위치랑 실제 기록으로 따라감.
@@ -40,6 +40,8 @@ CLI 안에 있던 서버(`cardinal serve`)를 `server/`의 Python 서비스로 �
  │                                                                                                       │
  │  POST /api/events/<id>/reply ──▶ router.reply ──▶ adapter.send_reply ──▶ DB: replies                  │◀── cardinal reply
  │                                                                                                       │    (세션 안 에이전트)
+ │  /mcp/worker|master (Cardinal MCP) ──▶ sessions.* / router.reply                                      │◀── mcp__cardinal__*  (세션 안 모델, 서버가 떠 있으면 기본)
+ │                                                                                                       │
  │  ingest.Ingestor ── ~/.cardinal/sessions 감시 ──▶ DB: sessions / session_events ──▶ /ws/events 푸시   │◀── 훅이 파일에 씀
  │                                                                                                       │
  │  terminal.bridge ── /ws/term/<이름> ── pty 안의 `tmux attach`                                          │
@@ -47,11 +49,12 @@ CLI 안에 있던 서버(`cardinal serve`)를 `server/`의 Python 서비스로 �
  └───────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-원칙 세 가지:
+원칙 네 가지:
 
 - **세션 제어 로직은 CLI 한 곳.** 서버는 `cardinal ... --json`을 subprocess로 부르기만 함 (`server/cardinal_server/cli.py`). tmux 조작, 훅 주입, 트랜스크립트 파싱은 전부 TS 쪽. 서버 없이도 CLI는 그대로 다 됨.
 - **기록은 파일이 원본, DB는 모음집.** CLI는 `~/.cardinal/sessions/<이름>/meta.json`, 훅은 자기 전용 폴더 `~/.cardinal/hooks/<instanceId>/`에만 씀. 서버는 읽기만 해서 SQLite에 모음. 서버가 꺼져 있어도 기록은 안 날아가고, 켜지면 따라잡음.
 - **채널 쪽 기록은 DB가 원본.** 채널 이벤트/전달/답장은 서버만 아는 정보라 DB에 바로 씀.
+- **세션 안 모델은 카디널 MCP로만.** 서버가 떠 있으면 tmux·SDK 세션 모두 `/mcp/worker|master`의 `mcp__cardinal__*` 도구로 카디널을 다룸 (CLI는 사람용). 도구는 다시 서버의 `Sessions`(→ CLI 또는 SDK)를 부름. [카디널 MCP](mcp.md).
 
 ---
 
@@ -80,7 +83,7 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 채널 켜기
 
 ## 3. 서버 기동 순서
 
-`app.py`의 `create_app()`이 객체를 만들고, `lifespan()`(`app.py:161`)이 켜고 끔.
+`app.py`의 `create_app()`이 객체를 만들고, `lifespan()`(`app.py:262`)이 켜고 끔.
 
 ```
 시작 전 확인 (`__main__.py` → `running.py` `precheck`)
@@ -104,9 +107,12 @@ lifespan 시작
  4. DISCORD_TOKEN 있으면 DiscordAdapter 만들고 start → client.start(token) 태스크 (게이트웨이 접속)
  5. ~/.cardinal/server.json 쓰기 {url, token, pid}, 권한 600
     (쓰기 직전에 다른 서버가 떴는지 한 번 더 확인 → 떴으면 시작 실패, 덮어쓰지 않음)
-    → 세션 안의 `cardinal reply`가 이걸 읽고 서버를 찾음
- ── 서비스 중 ──
-lifespan 종료
+    → 세션 안의 `cardinal reply`, CLI `new`(카디널 MCP 붙일지)가 이걸 읽고 서버를 찾음
+    (sdk_mgr.startup, 카디널 MCP 세션 매니저 시작도 이 단계. `~/.cardinal/mcp.key` 없으면 만듦)
+ ── 서비스 중 ── (요청을 받기 시작하면 백그라운드로)
+    · resume_on_start SDK 세션 다시 띄우기 (카디널 MCP 에 붙어야 해서 이때)
+    · 살아있는 tmux MCP 세션마다 `cardinal mcp-reconnect` (claude 는 끊긴 MCP 를 스스로 안 붙음)
+lifespan 종료 (열린 요청은 최대 5초 기다림: timeout_graceful_shutdown)
  6. server.json의 pid가 자기면 삭제 (다른 서버가 덮어썼으면 안 지움)
  7. ingest 태스크 취소, 디스코드 연결 닫기
 ```
@@ -125,7 +131,7 @@ POST /api/sessions
 ```
 
 ```
-클라이언트          app.create_session (app.py:250)       cardinal CLI (TS)                  tmux / claude
+클라이언트          app.create_session (app.py:387)       cardinal CLI (TS)                  tmux / claude
     │ POST ───────────▶│
     │                  │ pydantic SessionIn 검증
     │                  │  (role ∈ worker|master, match ∈ prefix|contains|regex|mention …)
@@ -141,12 +147,12 @@ POST /api/sessions
 
 단계별:
 
-1. **검증** (`app.py:105` `SessionIn`, `:97` `RouteIn`): 모르는 `match` 값이나 `role`은 여기서 422로 튕김.
-2. **CLI 호출** (`cli.py:50` `Cli.new`): `cardinal new <이름> --role <role> [--prompt …] [--cwd …] [--trust] --json [-- claude 인자]`.
+1. **검증** (`app.py:157` `SessionIn`, `:101` `RouteIn`): 모르는 `match` 값이나 `role`은 여기서 422로 튕김.
+2. **CLI 호출** (`cli.py:51` `Cli.new`): `cardinal new <이름> --role <role> [--prompt …] [--cwd …] [--trust] --json [-- claude 인자]`.
    - `asyncio.create_subprocess_exec`로 부름 (셸 안 거침). 환경변수에서 `CARDINAL_SESSION`/`CARDINAL_INSTANCE`/`CARDINAL_ROLE`은 빼고 넘김 (API로 만든 세션은 부모 없음). 종료 코드가 0이 아니면 stderr의 `cardinal: …` 메시지를 `CliError`로 → HTTP 400.
-   - CLI 쪽 동작은 [세션 시스템](session-system.md#세션-만들기) 그대로: 작업 폴더(`cwd` 없으면 고정 워크스페이스), `--session-id` 미리 지정, 훅 `--settings` 주입, 역할 프롬프트 (외부 이벤트면 `cardinal reply`로 답하라는 안내 포함).
+   - CLI 쪽 동작은 [세션 시스템](session-system.md#세션-만들기) 그대로: 작업 폴더(`cwd` 없으면 고정 워크스페이스), `--session-id` 미리 지정, 훅 `--settings` 주입, 역할 프롬프트. 서버가 CLI에 `CARDINAL_SERVER_URL`을 넘겨서, CLI가 카디널 MCP를 붙이고 MCP용 프롬프트로 띄움 (외부 이벤트는 `mcp__cardinal__reply`로). 마스터 도구로 만들면 `CARDINAL_PARENT_NAME/ID`도 넘김.
 3. **즉시 동기화** (`ingestor.sync()`): 파일 감시가 알아채길 기다리지 않고 바로 DB에 넣음. 응답에 DB 행을 담아 주려고.
-4. **라우트 저장** (`db.py:241` `add_route`): `routes.session_id` = 세션 고유 키(instanceId). 이름이 아니라 고유 키에 붙이니까, 같은 이름으로 세션을 새로 만들면 예전 라우트는 따라오지 않음.
+4. **라우트 저장** (`db.py:327` `add_route`): `routes.session_id` = 세션 고유 키(instanceId). 이름이 아니라 고유 키에 붙이니까, 같은 이름으로 세션을 새로 만들면 예전 라우트는 따라오지 않음.
 5. **응답**: `sessions` 행 + `routes` 배열. 이 시점 state는 보통 `starting` (claude가 아직 `SessionStart` 훅을 안 찍음).
 
 실제 응답 (테스트 때):
@@ -164,7 +170,7 @@ POST /api/sessions
 `ingest.py`. 훅은 파일에만 쓰고 서버랑 직접 통신 안 함. 그래서 서버가 꺼져 있어도 훅이 실패하지 않음.
 
 ```
-claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:237)
+claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:238)
    │ state.json 덮어쓰기 (tmp → rename) ──────▶│ state.json                          │
    │ events.jsonl 한 줄 추가 ─────────────────▶│ events.jsonl                         │
                                               │── watchfiles 변경 알림 (150ms 디바운스) ─▶│ _kick.set()
@@ -182,13 +188,13 @@ claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/
 `sync()` (`ingest.py:186`) 자세히:
 
 1. **tmux 생존 확인** (`_tmux_sessions`): `tmux list-sessions -F '#{session_name}'` 한 번. tmux 서버 자체가 없으면 실패 → 빈 집합.
-2. **세션 upsert** (`db.py:154`): 키는 `meta.instanceId` (예전 세션은 `meta.claudeSessionId`). 훅 폴더는 meta가 가리키는 것만 읽음. 지금 claude 세션 ID(`state.json`의 `claudeSessionId`, `/clear` 하면 바뀜)는 `claude_session_id` 칼럼으로.
+2. **세션 upsert** (`db.py:177`): 키는 `meta.instanceId` (예전 세션은 `meta.claudeSessionId`). 훅 폴더는 meta가 가리키는 것만 읽음. 지금 claude 세션 ID(`state.json`의 `claudeSessionId`, `/clear` 하면 바뀜)는 `claude_session_id` 칼럼으로.
    - tmux에 없으면 state.json 내용과 상관없이 `state='ended'`, `alive=0`.
    - `ON CONFLICT DO UPDATE`로 상태 칼럼들만 갱신, `deleted_at=NULL`로 되돌림.
 3. **이벤트 따라잡기** (`_tail_events`, `ingest.py:157`):
    - `ingest_offsets`에서 이 세션을 어디까지 읽었는지(바이트) 가져옴.
    - 파일 크기가 더 크면 그 뒤만 읽음. **마지막 `\n`까지만** 처리 (훅이 쓰는 중인 반쪽 줄은 다음 차례).
-   - 줄마다 JSON 파싱해서 `session_events`에 넣고, 새 오프셋까지 **한 트랜잭션**으로 커밋 (`db.py:217`). 중간에 죽어도 중복/누락 없음.
+   - 줄마다 JSON 파싱해서 `session_events`에 넣고, 새 오프셋까지 **한 트랜잭션**으로 커밋 (`db.py:273`). 중간에 죽어도 중복/누락 없음.
    - Esc 중단 보정 (DB만, 파일은 안 건드림): 트랜스크립트의 중단 표시, 그리고 응답 전 중단은 화면 맨 아래 `esc to interrupt` 안내가 3초 넘은 `busy`에서 연속 두 번(0.8초 이상 간격) 안 보이면 `idle`/`Interrupted`. 그래서 아무도 CLI를 안 불러도 웹 UI에 반영 (실측 4초). 규칙은 [세션 시스템](session-system.md#esc-중단--사람이-개입한-것)과 같음.
 4. **삭제 감지**: DB에선 살아있는데 폴더가 없는 세션 → `deleted_at` 찍음. `kill --purge`하거나 같은 이름으로 새로 만들 때 (CLI가 예전 폴더를 지우고 새로 씀) 생김. 행 자체는 안 지움.
 5. **변경 알림**: `sessions` 전체를 JSON으로 만들어 직전 것과 비교, 다르면 `on_change()` → `/ws/events` 푸시.
@@ -206,8 +212,8 @@ claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/
 | 입구 | 코드 | 만드는 것 |
 | --- | --- | --- |
 | 디스코드 메시지 | `discord_adapter.py:41` `on_message` | `InboundMessage(platform="discord", …)` |
-| `POST /api/channel/inbound` | `app.py:334` | `InboundMessage(platform="local", …)` |
-| `/ws/channel`에 `{"type":"message",…}` | `app.py:402` | `InboundMessage(platform="local", …)`, 첨부는 base64 |
+| `POST /api/channel/inbound` | `app.py:565` | `InboundMessage(platform="local", …)` |
+| `/ws/channel`에 `{"type":"message",…}` | `app.py:707` | `InboundMessage(platform="local", …)`, 첨부는 base64 |
 
 디스코드 어댑터가 채우는 값:
 
@@ -223,7 +229,7 @@ claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/
 
 **봇 메시지는 전부 무시** (자기 자신 포함). 안 그러면 자기 답장에 트리거가 들어 있을 때 무한 루프.
 
-### 6-2. `router.handle` (`router.py:129`)
+### 6-2. `router.handle` (`router.py:134`)
 
 ```
 InboundMessage
@@ -258,14 +264,14 @@ InboundMessage
 
 대소문자는 구분함.
 
-### 6-4. 첨부 저장 (`router.py:108`)
+### 6-4. 첨부 저장 (`router.py:113`)
 
 - 크기가 25MB 넘으면 안 받고 `error` 표시.
 - 디스코드는 `attachment.read()`로 받고, local은 이미 들어온 바이트 사용.
 - 파일명은 `[^\w.\-]` → `_`로 바꿔서 경로 탈출 방지.
 - 하나 실패해도 이벤트 전달은 계속. 실패한 건 세션 메시지에 `저장 실패: …`로 표시.
 
-### 6-5. 세션 전달 (`router.py:161` `_deliver`)
+### 6-5. 세션 전달 (`router.py:166` `_deliver`)
 
 1. **상태 확인**: 세션 state가 `idle`/`busy`/`starting`이면 전달 시작. `waiting`(승인 대기)이면 전달 안 하고 `deliveries`에 `failed` (`세션 상태 waiting`).
    - `busy`/`starting`: CLI가 idle 될 때까지 기다렸다가 보냄 (작업 중에 넣으면 진행 중인 턴에 끼어들고, 다이얼로그에 넣으면 텍스트가 다이얼로그로 감). 막 만든 세션에 바로 온 이벤트도 이렇게 기다렸다 들어감. 예전엔 `starting`이면 바로 실패였음.
@@ -283,13 +289,15 @@ InboundMessage
    답장: <repo>/bin/cardinal reply evt_71363e3e "<답장>" [--file <경로>]
    ```
 
+   마지막 줄은 세션에 맞춰 나감. 위는 서버 없이 띄운(CLI 방식) tmux 세션. 카디널 MCP에 붙은 세션(지금 기본, SDK는 항상)이면 `답장: mcp__cardinal__reply 도구 (event_id=evt_…, text, files)`.
+
    외부에서 온 값(본문, 작성자, 채널/서버 이름, 첨부 경로)은 탭·줄바꿈 빼고 **제어 문자를 지움** (`clean`). tmux는 붙여넣기 내용을 안 걸러서 `ESC[201~` 같은 게 그대로 감. 실제 claude에선 Claude Code가 걸러줘서 탈출은 재현 안 됐지만 방어용.
 
-   첫 줄의 `[cardinal:event <ID>]`가 약속된 표시. 세션 시스템 프롬프트에 "이걸로 시작하면 외부 이벤트고, 답은 `cardinal reply`로만 전달된다"가 들어 있음.
+   첫 줄의 `[cardinal:event <ID>]`가 약속된 표시. 세션 시스템 프롬프트에 "이걸로 시작하면 외부 이벤트고, 답은 `mcp__cardinal__reply`(CLI 방식이면 `cardinal reply`)로만 전달된다"가 들어 있음.
 3. **`pending` 기록**: `deliveries`에 `pending` 행을 먼저 넣고 `/ws/channel`에 `{"type":"delivery", …, "status":"pending"}` 푸시.
 4. **세션 락** (서버 안): 세션마다 `asyncio.Lock` 하나. 같은 세션에 가는 전달은 하나씩. `auto_reply`면 답장까지 끝나야 다음 이벤트로 넘어감.
-5. **보내기** (`cli.py:64` `Cli.send`): `cardinal send <이름> - --queue-timeout 600 --json`, 텍스트는 **stdin으로** 넘김 (인자로 넘기면 `-`로 시작하는 본문을 옵션으로 오해함).
-   - CLI 안에서 ([세션 시스템 send](session-system.md#send)): 세션 파일 락 → `busy`면 idle 대기 → `waiting`·신뢰 다이얼로그면 거부 → (Esc 중단으로 입력창에 되돌아온 글이 있으면 비움) → 붙여넣기 → 200ms → `Enter` → 훅 상태가 바뀌는지(받았는지) 확인, 안 받았으면 `Enter` 다시 (최대 3번, 3초씩) (`src/session.ts:404-457`).
+5. **보내기** (`cli.py:70` `Cli.send`): `cardinal send <이름> - --queue-timeout 600 --json`, 텍스트는 **stdin으로** 넘김 (인자로 넘기면 `-`로 시작하는 본문을 옵션으로 오해함).
+   - CLI 안에서 ([세션 시스템 send](session-system.md#send)): 세션 파일 락 → `busy`면 idle 대기 → `waiting`·신뢰 다이얼로그면 거부 → (Esc 중단으로 입력창에 되돌아온 글이 있으면 비움) → 붙여넣기 → 200ms → `Enter` → 훅 상태가 바뀌는지(받았는지) 확인, 안 받았으면 `Enter` 다시 (최대 3번, 3초씩) (`src/session.ts:491-546`).
    - 서버 쪽 subprocess 타임아웃은 idle 대기를 감안해서 `600 + 30`초.
 6. **결과 기록**: claude가 받았으면(`accepted`) `sent`, 못 받았거나 CLI 에러면 `failed` + 사유로 같은 행을 갱신.
 7. `/ws/channel`에 `{"type":"delivery", event_id, session, status}` 푸시.
@@ -302,14 +310,16 @@ claude 입장에서 이 텍스트는 **붙여넣기(paste)로 들어온 입력**
 
 ## 7. 흐름 D: 에이전트 답장 (`cardinal reply`)
 
+지금 기본은 카디널 MCP: 세션 안 모델이 `mcp__cardinal__reply(event_id, text, files)`를 부르면 `/mcp/*` → `CardinalMcp.reply`(`mcp_server.py`)가 파일을 읽고(작업 폴더 기준 상대 경로 가능) 아래 4번과 같은 `router.reply`로 넘김. 그 뒤는 똑같음. 아래 그림은 CLI 경로 (사람, 또는 서버 없이 띄운 세션).
+
 ```
 세션 안 claude (Bash 도구)          cardinal CLI (src/reply.ts)                 서버                                  디스코드
    │ cardinal reply evt_… "…" --file a.png
    │────────────────────────────▶│ 1. 텍스트/파일 검사
    │                             │ 2. 서버 주소 찾기
-   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:341)
+   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:572)
    │                             │                                             │  UploadFile → OutboundFile
-   │                             │                                             │ router.reply (router.py:203)
+   │                             │                                             │ router.reply (router.py:208)
    │                             │                                             │  이벤트 조회 → 어댑터 고르기
    │                             │                                             │  adapter.send_reply ─────────────▶│ 원래 메시지에 답장
    │                             │                                             │  replies INSERT (sent/failed)
@@ -326,8 +336,8 @@ CLI 쪽 (`src/reply.ts`):
 
 서버 쪽:
 
-4. **엔드포인트** (`app.py:341`): 폼 필드를 받아 `UploadFile`을 바이트로 읽어 `OutboundFile(filename, data, content_type)`로. 서버에서도 한 번 더 검사: 텍스트·파일 둘 다 없으면 400, 파일 11개 이상이나 10MB 초과면 413 (CLI를 안 거치고 API를 직접 불러도 막히게).
-5. **`router.reply`** (`router.py:203`):
+4. **엔드포인트** (`app.py:572`): 폼 필드를 받아 `UploadFile`을 바이트로 읽어 `OutboundFile(filename, data, content_type)`로. 서버에서도 한 번 더 검사: 텍스트·파일 둘 다 없으면 400, 파일 11개 이상이나 10MB 초과면 413 (CLI를 안 거치고 API를 직접 불러도 막히게).
+5. **`router.reply`** (`router.py:208`):
    - `channel_events`에서 이벤트 조회. 없으면 `LookupError` → **404**.
    - 이벤트의 `platform`으로 어댑터 선택. 그 플랫폼이 연결 안 돼 있으면 (예: 디스코드 이벤트인데 토큰 없이 재시작) 실패.
    - `session` 이름으로 세션 ID 찾아서 기록에 붙임 (못 찾아도 답장은 보냄).
@@ -350,7 +360,7 @@ CLI 쪽 (`src/reply.ts`):
 
 ## 8. 흐름 E: 자동 답장 (`auto_reply`)
 
-라우트에 `auto_reply: true`가 있으면 `_deliver`가 다르게 돎 (`router.py:173`):
+라우트에 `auto_reply: true`가 있으면 `_deliver`가 다르게 돎 (`router.py:178`):
 
 ```
 _deliver (세션 락 잡은 채로)
@@ -387,7 +397,7 @@ _deliver (세션 락 잡은 채로)
 
 ## 9. 흐름 F: 웹 터미널 / 상태 푸시
 
-### 웹 터미널 `/ws/term/<이름>` (`app.py:365` → `terminal.py:17`)
+### 웹 터미널 `/ws/term/<이름>` (`app.py:596` → `terminal.py:17`)
 
 1. 토큰 검사 → DB에서 이름으로 세션 찾기. 없거나 `alive=0`이면 `4404`로 닫음.
 2. `ptyprocess`로 pty를 만들고 그 안에서 `tmux attach-session -t =<tmux이름>` (관전 모드면 `-r -f ignore-size`).
@@ -406,13 +416,14 @@ _deliver (세션 락 잡은 채로)
 
 `Hub.publish`는 구독자들에게 **동시에** 보내고, 구독자 하나당 2초 안에 못 보내면 그 구독자를 끊음. 느린 클라이언트 하나가 다른 구독자나 publish를 기다리는 라우터를 붙잡지 않게. (예전엔 순서대로 기다려서 하나가 느리면 전부 밀렸음)
 
-`/ws/events`는 세션 목록이 실제로 바뀔 때만 푸시함. 비교할 때 매번 바뀌는 `updated_at`은 뺌 (예전엔 변화 없이도 3초마다 푸시됐음).
+`/ws/events`는 세션 목록이 실제로 바뀔 때만 푸시함. 비교할 때 매번 바뀌는 `updated_at`은 뺌 (예전엔 변화 없이도 3초마다 푸시됐음). 푸시하는 세션 행은 REST 목록과 같이 `sdk_options`의 비밀 값을 가림 (예전엔 원본이 그대로 나갔음).
 
 ### 인증
 
-- HTTP: 모든 라우트에 `Depends(auth)` (`app.py:205`). `?token=` 또는 `Authorization: Bearer`. 틀리면 401.
-- WS: `ws_auth` (`app.py:209`)가 accept 전에 검사, 틀리면 `4401`로 닫음.
+- HTTP: 모든 라우트에 `Depends(auth)` (`app.py:319`). `?token=` 또는 `Authorization: Bearer`. 틀리면 401.
+- WS: `ws_auth` (`app.py:323`)가 accept 전에 검사, 틀리면 `4401`로 닫음.
 - `CARDINAL_TOKEN`이 없으면 전부 통과 (기본 바인딩이 127.0.0.1이라).
+- `/mcp/*`는 이 토큰이 아니라 세션 키(`X-Cardinal-Instance` + HMAC `X-Cardinal-Key`)로 들어옴. 틀리면 401, 워커가 `/mcp/master`면 403. [카디널 MCP](mcp.md#누가-불렀는지).
 - uvicorn 로그(`uvicorn.access`, `uvicorn.error`)에 찍히는 `?token=xxx`는 `token=***`로 가림 (`_RedactToken` 필터, 서버 기동 때 붙임). 웹 페이지가 쿼리로 토큰을 써서 그대로 두면 로그에 남았음.
 
 ---
@@ -459,13 +470,17 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 | `state`, `state_at`, `last_event`, `detail`, `tool`, `transcript_path` | state.json에서. tmux 없으면 state는 `ended` |
 | `deleted_at` | 기록 폴더가 사라진 시각 |
 | `updated_at` | 마지막 upsert |
+| `backend` | `tmux`(기본) / `sdk`. SDK 세션은 수집기가 안 건드리고 `sdk.py`가 직접 갱신 ([SDK 모드](sdk-mode.md)) |
+| `sdk_options` | SDK 세션 옵션 JSON (원본 저장, API·`/ws/events`로 내보낼 땐 env/헤더 값을 `***`로 가림) |
+| `mcp` | 카디널 MCP에 붙어 있음 (SDK는 항상, tmux는 meta.json의 `mcp`). 채널 전달의 답장 안내를 이걸로 고름 |
 
 "이름으로 찾기"(`session_by_name`)는 `deleted_at IS NULL` 중 `created_at` 최신 1개.
 
-### session_events / ingest_offsets
+### session_events / ingest_offsets / sdk_turns
 
 - `session_events`: `(session_id, at, event, tool, data)`. `data`는 events.jsonl 원본 줄 (프롬프트 2000자, 도구 입력 300자, `promptId` 등).
 - `ingest_offsets`: `(session_id, offset)` 바이트 단위.
+- `sdk_turns`: SDK 세션의 턴 하나씩 `(session_id, origin, prompt, prompt_at, texts, tools, complete, interrupted, result, ended_at)`. SDK 세션의 `session_events`는 파일 대신 SDK 훅 콜백이 바로 씀.
 
 ### routes
 
@@ -544,6 +559,7 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 | WS | `/ws/term/<이름>?cols=&rows=[&readonly=1]` | 흐름 F |
 | WS | `/ws/events` | 흐름 F |
 | WS | `/ws/channel` | 흐름 F + local 입력 |
+| POST | `/mcp/worker`, `/mcp/master` | 카디널 MCP (streamable HTTP, stateless). 세션 키 필요, `GET`은 405. [카디널 MCP](mcp.md) |
 
 ---
 

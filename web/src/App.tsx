@@ -126,6 +126,11 @@ export default function App() {
           <span className="chip">
             살아있음 {counts.alive} · 작업 중 {counts.busy}
           </span>
+          {health?.sdk?.enabled && (
+            <span className="chip" title="서버가 SDK 모드 (새 세션 기본이 서버 안 Agent SDK)">
+              <span className="dot info" /> SDK 모드 · {health.sdk.alive}
+            </span>
+          )}
           {health && (
             <span className="chip" title={`디스코드: ${health.channels.discord}`}>
               <span className={`dot ${health.channels.discord === 'ready' ? 'ok' : health.channels.discord === 'off' ? 'muted' : health.channels.discord.startsWith('failed') ? 'err' : 'info'}`} />
@@ -165,7 +170,7 @@ export default function App() {
               <img src="/banner.png" alt="" />
               <h2>세션을 고르거나 새로 만드세요</h2>
               <p className="muted">
-                왼쪽 목록에서 세션을 고르면 터미널·메시지·결과·훅 이벤트·라우트를 볼 수 있어요. 채널 이벤트는 위의 “채널” 탭에서.
+                왼쪽 목록에서 세션을 고르면 터미널·메시지·결과·훅 이벤트·라우트를 볼 수 있어요. SDK 세션은 터미널 대신 대화·MCP·설정 탭이 있어요. 채널 이벤트는 위의 “채널” 탭에서.
               </p>
             </div>
           )}
@@ -174,6 +179,7 @@ export default function App() {
 
       {creating && (
         <CreateSession
+          health={health}
           onClose={() => setCreating(false)}
           onCreated={(name) => {
             setCreating(false);

@@ -6,10 +6,12 @@ import type { SessionStatus } from './session.js';
 
 const HELP = `cardinal — tmux + Claude Code 세션 제어
 
-  cardinal new <name> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [-- <claude 인자...>]
+  cardinal new <name> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [--no-mcp] [-- <claude 인자...>]
                                              --cwd: 작업 폴더. 없으면 카디널 세션(마스터) 안에서 부른 경우 그 세션의 폴더,
                                                     아니면 $CARDINAL_WORKSPACE. 처음 쓰는 폴더는 신뢰 다이얼로그가 뜸
                                              --trust: 그 다이얼로그를 자동으로 수락
+                                             카디널 서버가 떠 있으면 세션에 카디널 MCP(mcp__cardinal__*)를 붙이고 모델은 그것만 씀
+                                             (--no-mcp: 안 붙이고 모델도 CLI 를 쓰게)
   cardinal ls [--json]                       세션 목록 + 상태
   cardinal status <name> [--json]            한 세션 상태
   cardinal send <name> <text|-> [--wait] [--timeout SEC] [--now] [--queue-timeout SEC] [--no-enter] [--force]
@@ -17,6 +19,7 @@ const HELP = `cardinal — tmux + Claude Code 세션 제어
                                              같은 세션 send 는 한 줄로 섬. 작업 중이면 idle 될 때까지 기다렸다가 보냄
                                              (--now: 안 기다리고 진행 중인 턴에 끼워넣기, --queue-timeout: 대기 한도, 기본 600초)
   cardinal keys <name> <key...>              tmux 키 그대로 전송 (예: Enter, Escape, C-c, 1)
+  cardinal mcp-reconnect <name>              카디널 MCP 다시 붙이기 (서버가 다시 뜨면 서버가 알아서 부름)
   cardinal wait <name> [--timeout SEC]       idle/waiting/ended 될 때까지 대기
   cardinal screen <name> [--lines N]         현재 화면 (N 주면 스크롤백 포함)
   cardinal report <name> [--tools] [--json]  결과 보고: 살아있는지, 작업중/완료, 마지막 턴 응답 전체
@@ -118,6 +121,7 @@ async function main() {
       prompt: { type: 'string' },
       cwd: { type: 'string' },
       trust: { type: 'boolean' },
+      'no-mcp': { type: 'boolean' },
       wait: { type: 'boolean' },
       timeout: { type: 'string' },
       'no-enter': { type: 'boolean' },
@@ -144,6 +148,7 @@ async function main() {
         claudeArgs: passthrough,
         cwd: o.cwd,
         trust: o.trust,
+        noMcp: o['no-mcp'],
       });
       if (o.wait) {
         // 초기 프롬프트 있으면 첫 턴이 끝날 때(Stop)까지, 없으면 뜰 때(SessionStart)까지
@@ -220,6 +225,12 @@ async function main() {
     case 'keys':
       await session.keys(need(), ...p.slice(1));
       break;
+    case 'mcp-reconnect': {
+      const ok = await session.mcpReconnect(need());
+      if (!ok) fail(`${p[0]}: 카디널 MCP 다시 붙이기 실패 (화면 확인: cardinal screen ${p[0]})`);
+      console.log(`${p[0]}: 카디널 MCP 다시 붙음`);
+      break;
+    }
     case 'wait': {
       const st = await session.wait(need(), { timeoutMs });
       o.json ? console.log(JSON.stringify(st, null, 2)) : printStatus(st);

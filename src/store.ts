@@ -22,6 +22,7 @@ export interface SessionMeta {
   claudeArgs: string[];
   createdAt: string;
   parent?: { name: string; instanceId: string }; // 이 세션을 만든 카디널 세션 (마스터가 워커를 띄운 경우)
+  mcp?: boolean; // 카디널 MCP(서버)에 붙여 띄움. 아니면 서버 없이 띄운 것 → 모델이 CLI 를 씀
 }
 
 // 훅이 계속 덮어씀 (claude 쪽 소유)

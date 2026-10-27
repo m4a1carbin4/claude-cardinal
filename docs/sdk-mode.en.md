@@ -1,6 +1,6 @@
 # SDK mode
 
-[한국어](sdk-mode.md) · Related: [server](server.en.md), [session system](session-system.en.md)
+[한국어](sdk-mode.md) · Related: [server](server.en.md), [session system](session-system.en.md), [Cardinal MCP](mcp.en.md)
 
 Instead of tmux + the Claude Code TUI, this mode **runs sessions directly inside the server process with the Claude Agent SDK (`claude-agent-sdk`, Python)**. Messages go in and out as data (no screen scraping, no key presses), which suits programs such as speech recognition/synthesis or motion.
 
@@ -19,6 +19,13 @@ cd server && uv run cardinal-server --sdk      # or CARDINAL_SDK=1
 With `--sdk`, new sessions default to the `sdk` backend. tmux sessions still work (`"backend": "tmux"`). A server started without `--sdk` can't create SDK sessions (old records can still be read and cleaned up). Check `sdk.enabled` in `GET /api/health`.
 
 It uses this machine's Claude Code login (the SDK ships its own claude CLI).
+
+Global Claude Code settings are read too: without `setting_sources`, user (`~/.claude/settings.json`), project and local are all loaded (measured: the global `model`, plugins with their skills and MCP, claude.ai connectors). `[]` loads none.
+Three exceptions:
+
+- **Claude in Chrome**: terminal claude turns it on from "enable by default" in `/chrome` (`claudeInChromeDefaultEnabled` in `~/.claude.json`), but the SDK's non-interactive mode ignores that value and needs `--chrome` explicitly. Without a `chrome` option, Cardinal reads that value and adds `--chrome`/`--no-chrome` (measured: unset → `claude-in-chrome` connected, 22 tools, callable right away in auto mode / `false` → not attached)
+- **Permission mode**: Cardinal passes its default `auto` explicitly, so `defaultMode` in `settings.json` isn't followed
+- **claude version**: the CLI bundled in the SDK, not the installed `claude` (settings and login are shared via `~/.claude`)
 
 ## Creating a session
 
@@ -44,13 +51,15 @@ POST /api/sessions
     "partial": false,               // true: token-level StreamEvents on /ws/sdk (for TTS)
     "max_turns": null, "max_budget_usd": null, "setting_sources": null,
     "question_timeout_s": null,     // no answer within this time → "decide yourself and continue"
-    "resume_on_start": false        // continue automatically when the server restarts
+    "resume_on_start": false,       // continue automatically when the server restarts
+    "chrome": null                  // Claude in Chrome. null: follow claudeInChromeDefaultEnabled in ~/.claude.json, true/false: force
   }
 }
 ```
 
 - Name rules match tmux (letters/digits/-/_, 48 chars). Names are shared across backends: a name used by a tmux session (including its records) can't be used for SDK, and a live SDK session's name can't be used for tmux. An ended session's name is taken over; the old record stays, marked deleted.
-- In session list/detail, values of `sdk_options.env` and MCP `env`/`headers` are shown as `***` (the DB keeps the originals because restart needs them).
+- In session list/detail and `/ws/events` pushes, values of `sdk_options.env` and MCP `env`/`headers` are shown as `***` (the DB keeps the originals because restart needs them).
+- If options sent to restart still contain `***`, the original value is used. So a client that edits the redacted list and sends it back (the web UI settings tab) doesn't wipe the keys without ever knowing them.
 - A new session is `idle` in about 0.7s (no trust dialog).
 
 ## Shared API (same as tmux sessions)
@@ -74,7 +83,7 @@ The send rules match tmux: one at a time per session, and if it's working, wait 
 | API | What it does |
 | --- | --- |
 | `POST …/interrupt` | stop the running turn (tmux Esc). Pending questions are released as denied. The turn is `interrupted`; state `idle`/`Interrupted` |
-| `POST …/restart` `{resume: true, sdk: {...}}` | start again; by default continues the last conversation. `sdk` takes only the options to change (e.g. add an MCP server) |
+| `POST …/restart` `{resume: true, sdk: {...}}` | start again; by default continues the last conversation. `sdk` takes only the options to change (e.g. add an MCP server). env/header values of `***` keep the original |
 | `GET …/pending` | questions/permission checks waiting for an answer |
 | `POST …/pending/<id>` | answer. Question: `{"answers": {"question text": "chosen label or free text"}}`. Permission: `{"allow": true}` / `{"allow": false, "message": "why"}` (+ `updated_input`). `allow: false` on a question means "no answer, decide yourself" |
 | `GET …/mcp` | MCP server status (connected/failed/needs auth, tool list) |
@@ -110,20 +119,27 @@ Sent (`id` is your own request ID):
 - If the connection drops, sent messages still run in the session (only the result is discarded).
 - With `partial: true`, text arrives as it's generated via `StreamEvent` `content_block_delta`/`text_delta` → straight into TTS.
 
+## Web UI
+
+The web UI (`web/`) handles SDK sessions fully too. Details in [web UI](web-ui.en.md#sdk-sessions).
+
+- New session dialog: pick the backend (tmux / SDK; SDK is disabled if the server isn't `--sdk`) and every SDK option (permission mode, model, extra prompt, MCP servers as JSON, strict, streaming, auto resume; advanced: fallback model, effort, allowed/disallowed tools, max turns/budget, question timeout, extra dirs, env)
+- `SDK` marker in the list and detail. **Conversation · MCP · Settings** tabs instead of terminal/screen
+- Conversation tab: live over `/ws/sdk`. Past turns (DB) + the current turn's text, tool calls and tool results; with `partial`, text as it's generated. Questions as option buttons (+ free text, multi-select), permissions as allow/deny (+ reason). Enter to send, an interrupt button, "resume" for ended sessions
+- Voice input: 🎤 in the conversation tab, turned into text by in-browser Whisper and sent ([web UI](web-ui.en.md#voice-input-sdk-conversation-tab))
+- MCP tab: status and tools per server, reconnect/enable/disable
+- Settings tab: change model / permission mode now, context usage, edit options and restart (resume / new conversation)
+
 ## Cardinal tools (`mcp__cardinal__*`)
 
-SDK sessions get an in-process MCP server `cardinal` (allowed without asking). No need to call the `cardinal` CLI through Bash.
+SDK sessions attach to **the same Cardinal MCP** as tmux sessions (the server's `/mcp/worker|master`), allowed without asking. The old in-process MCP server is gone. Tool list, auth and restart behavior: [Cardinal MCP](mcp.en.md).
 
-| Tool | |
-| --- | --- |
-| `reply(event_id, text, files[])` | reply to a channel event (files are local paths, up to 10 × 10MB, relative to the working dir) |
-| `session_list()` | session list |
-| `session_new(name, prompt, role, cwd, backend, wait, timeout_s)` | create a worker. cwd defaults to this session's folder, backend to sdk. The parent (`parent_name`) is recorded |
-| `session_send(name, text, wait, timeout_s)` | send an instruction (tmux sessions too) |
-| `session_report(name)` | result report |
-| `session_kill(name, purge)` | clean up |
+- Worker: `reply`, `session_list`
+- Master: the above + `session_new`, `session_send`, `session_wait`, `session_report`, `session_kill`, `session_screen`, `session_keys`, `session_answer`
+- `session_new` defaults cwd and backend to the caller's (an SDK master makes SDK workers). Tmux workers get their parent (`parent_name`) recorded too
+- `resume_on_start` sessions start once the server accepts requests (before that `/mcp` isn't served and the Cardinal tools wouldn't attach)
 
-Delivered messages (`[cardinal:event …]`) point SDK sessions to `mcp__cardinal__reply`. `CARDINAL_SERVER_URL` and `bin/` on `PATH` are also set, so `cardinal reply` from Bash works too.
+Delivered messages (`[cardinal:event …]`) point to `mcp__cardinal__reply`.
 
 ## How it works inside
 
@@ -150,15 +166,24 @@ Run for real against a scratch server (`--sdk`, haiku model):
 - 3 simultaneous sends → 3 separate turns, each with its own answer
 - interrupt during Bash `sleep 30` → immediately `interrupted`, next send fine
 - Channel: local event → delivery `sent` → auto reply / agent replied with text + file (note.txt) via `mcp__cardinal__reply`; no duplicate auto reply
-- An SDK master created a worker with `session_new` and collected its answer; worker `parent=m1`, same folder
+- An SDK master created a worker with `session_new` and collected its answer; worker `parent=m1`, same folder (in-process tools back then; rechecked over the Cardinal MCP: [Cardinal MCP → Verified](mcp.en.md#verified))
 - After restart (resume) it remembered the earlier conversation; after a server restart → `ended` → restart kept the memory; a `resume_on_start` session came back on server start
 - External MCP (stdio) connected → tool call "zebra-15", disable/enable/reconnect; with `strict_mcp_config` only that server + cardinal
 - claude process killed with -9 → immediately `ended` (with reason), sends rejected, restart recovered
 - `partial` → `StreamEvent` text chunks received
 - tmux sessions on the same server still fine; name conflicts and tmux-only APIs rejected; a server without `--sdk` refuses SDK creation
 
+Through the web UI (Chrome, scratch server + vite dev, haiku):
+
+- Sent from the conversation tab → picked "Mango" on the AskUserQuestion card → 2 tool calls + "You chose Mango"
+- Watched text arrive character by character on a long story → interrupt → partial reply saved as "interrupted"
+- Added an MCP server (zebra, with env) in settings and restarted → connected in the MCP tab, 1 tool → call returned "zebra-7"
+- Restarted with the redacted (`***`) options untouched → env and MCP env originals kept in the DB, MCP still works
+- Server restart → "session ended" in the conversation tab + resume → remembered the earlier chat ("Mango")
+- `default` mode SDK session from the new session dialog → Write permission card → deny (reason "no files today") reached claude → asked again → allow → file created
+- tmux sessions on the same page keep their old tabs (terminal etc.), no console errors
+
 ## Not done yet
 
-- Web UI (SDK screens: answering pending items, MCP status, stream). The current UI shows list/send/result/routes, but terminal/screen tabs don't apply
 - Not tried with a real Discord bot (verified on the local channel; same router)
 - Long runs with permission modes other than auto, image input (streaming input blocks), showing subagent messages separately

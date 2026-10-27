@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CARDINAL_HOME, ROOT, SESSIONS_DIR, WORKSPACE, hookDir, tmuxName, transcriptPath } from './paths.js';
@@ -45,6 +45,7 @@ function hookSettings(dir: string) {
 // Bash 도구는 사용자 셸 프로필로 PATH를 다시 잡아서 세션에 넣어준 PATH가 안 먹음 → 프롬프트에 절대경로 박음
 const CLI = shq(path.join(ROOT, 'bin', 'cardinal'));
 
+// 서버 없이 띄운 세션 (사람이 CLI 로 직접 쓰는 경우): 모델도 CLI 로 카디널을 다룸
 const COMMON_PROMPT = (name: string, role: Role) => `
 너는 카디널(Cardinal)이 띄운 tmux-Claude Code 세션 "${name}" 이고 레벨은 ${role} 이다.
 세션 제어 CLI는 ${CLI} 이다 (\`${CLI} help\` 참고). 아래에서 \`cardinal\` 은 이 경로를 뜻한다.
@@ -68,6 +69,60 @@ const MASTER_PROMPT = `
 - 정리: \`cardinal kill <이름>\`
 `;
 
+// 서버가 떠 있으면 모델은 카디널 MCP(mcp__cardinal__*)만 씀. server/cardinal_server/sdk.py 의 프롬프트와 같은 내용
+const MCP_COMMON_PROMPT = (name: string, role: Role) => `
+너는 카디널(Cardinal)이 띄운 tmux-Claude Code 세션 "${name}" 이고 레벨은 ${role} 이다.
+카디널은 카디널 MCP 도구(mcp__cardinal__*)로만 다룬다. cardinal CLI 는 사람용이니 Bash 로 부르지 마라.
+
+\`[cardinal:event <이벤트ID>]\` 로 시작하는 메시지는 외부 채널(디스코드 등)에서 온 이벤트다.
+그 이벤트에 답할 때는 응답 텍스트만으로는 전달되지 않는다. 반드시 \`mcp__cardinal__reply\` 도구로 보내라
+(event_id, text, files: 첨부할 로컬 파일 경로 목록, 최대 10개·각 10MB). 이벤트 첨부파일은 메시지에 적힌 로컬 경로에 있다.
+`;
+
+const MCP_MASTER_PROMPT = `
+너는 마스터 세션이다. 작업을 나눌 때는 내장 서브 에이전트(Agent 도구)나 워크플로 대신 카디널 도구(mcp__cardinal__*)로 독립 워커 세션을 띄워서 맡겨라.
+- 워커 만들기: \`session_new\` (name, prompt, wait). 기본으로 너와 같은 작업 폴더, 같은 방식으로 뜬다
+- 지시: \`session_send\` (wait=true 면 응답까지 받음). 오래 걸릴 일은 wait=false 로 보내고 \`session_wait\`
+- 상태/결과: \`session_list\`, \`session_report\` (작업중/완료 + 마지막 턴 응답 전체)
+- 워커가 막히면: tmux 워커는 \`session_screen\` 으로 보고 \`session_keys\`, SDK 워커는 \`session_answer\`
+- 정리: \`session_kill\`
+사용자가 서브 에이전트를 쓰라고 따로 요청한 경우에만 예외.
+`;
+
+// 카디널 서버가 떠 있으면 그 서버의 카디널 MCP 를 붙일 설정. 키는 서버 비밀 키(mcp.key)로 만든 HMAC
+// (server/cardinal_server/mcp_server.py session_key 와 같은 계산). 서버가 없으면 undefined → CLI 방식
+async function mcpAttach(instanceId: string, role: Role): Promise<object | undefined> {
+  let url = process.env.CARDINAL_SERVER_URL;
+  if (!url) {
+    try {
+      url = JSON.parse(fs.readFileSync(path.join(CARDINAL_HOME, 'server.json'), 'utf8')).url as string;
+    } catch {
+      return undefined;
+    }
+  }
+  let secret: string;
+  try {
+    secret = fs.readFileSync(path.join(CARDINAL_HOME, 'mcp.key'), 'utf8').trim();
+  } catch {
+    return undefined;
+  }
+  if (!secret) return undefined;
+  // server.json 은 서버가 죽으면서 못 지웠을 수도 있으니 살아있는지 확인 (토큰 걸린 서버는 401 이어도 떠 있는 것)
+  const up = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1500) })
+    .then((r) => r.ok || r.status === 401)
+    .catch(() => false);
+  if (!up) return undefined;
+  return {
+    mcpServers: {
+      cardinal: {
+        type: 'http',
+        url: `${url}/mcp/${role === 'master' ? 'master' : 'worker'}`,
+        headers: { 'X-Cardinal-Instance': instanceId, 'X-Cardinal-Key': createHmac('sha256', secret).update(instanceId).digest('hex') },
+      },
+    },
+  };
+}
+
 export interface CreateOptions {
   name: string;
   role?: Role;
@@ -75,6 +130,7 @@ export interface CreateOptions {
   claudeArgs?: string[];
   cwd?: string; // 세션 작업 폴더. 없으면 고정 워크스페이스. 훅/기록 위치(CARDINAL_HOME)와는 무관
   trust?: boolean; // 작업 폴더 신뢰 다이얼로그가 뜨면 자동으로 수락 (명시적으로 줄 때만)
+  noMcp?: boolean; // 서버가 떠 있어도 카디널 MCP 를 안 붙임 (모델이 CLI 를 씀)
 }
 
 // 처음 쓰는 폴더에서 claude 가 띄우는 "이 폴더를 신뢰하냐" 다이얼로그
@@ -107,6 +163,14 @@ function callerSession(): SessionMeta | undefined {
   if (!name || !instanceId) return undefined;
   const meta = readMeta(name);
   return meta?.instanceId === instanceId ? meta : undefined;
+}
+
+// 카디널 서버가 마스터 도구(session_new)로 만들 때 알려주는 부모. SDK 마스터는 meta 파일이 없어서 env 로 받음
+// (작업 폴더는 서버가 --cwd 로 따로 넘김)
+function serverParent(): { name: string; instanceId: string } | undefined {
+  const name = process.env.CARDINAL_PARENT_NAME;
+  const instanceId = process.env.CARDINAL_PARENT_ID;
+  return name && instanceId ? { name, instanceId } : undefined;
 }
 
 // --trust: 신뢰 다이얼로그가 뜨면 "Yes, I trust this folder" 로 넘김. 안 뜨고 바로 준비되면 그냥 끝
@@ -160,14 +224,20 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
   // 작업 폴더: --cwd > 만든 세션(마스터)의 작업 폴더 > 고정 워크스페이스
   const parent = callerSession();
   const cwd = resolveCwd(opts.cwd ?? parent?.cwd);
+  const parentRef = parent ? { name: parent.name, instanceId: parent.instanceId! } : serverParent();
 
   const instanceId = randomUUID();
   const hdir = hookDir(instanceId);
   const claudeSessionId = randomUUID();
   const claudeArgs = opts.claudeArgs ?? [];
-  const systemPrompt = COMMON_PROMPT(name, role) + (role === 'master' ? MASTER_PROMPT : '');
+  const mcp = opts.noMcp ? undefined : await mcpAttach(instanceId, role);
+  const systemPrompt = mcp
+    ? MCP_COMMON_PROMPT(name, role) + (role === 'master' ? MCP_MASTER_PROMPT : '')
+    : COMMON_PROMPT(name, role) + (role === 'master' ? MASTER_PROMPT : '');
   const argv = [
     'claude',
+    // 둘 다 값을 여러 개 받는 옵션이라 다음 인자가 -- 로 시작하는 자리에 둠 (끝에 두면 첫 지시를 값으로 먹음)
+    ...(mcp ? ['--mcp-config', JSON.stringify(mcp), '--allowedTools', 'mcp__cardinal'] : []),
     '--session-id', claudeSessionId,
     '--name', name,
     '--settings', JSON.stringify(hookSettings(hdir)),
@@ -185,7 +255,8 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
     claudeSessionId,
     claudeArgs,
     createdAt: new Date().toISOString(),
-    ...(parent ? { parent: { name: parent.name, instanceId: parent.instanceId! } } : {}),
+    ...(parentRef ? { parent: parentRef } : {}),
+    mcp: !!mcp,
   };
   // 이전에 같은 이름으로 죽은 세션 기록(이름 폴더 + 그 훅 폴더)이 남아 있으면 치우고 시작
   removeSession(name);
@@ -207,6 +278,8 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
         `CARDINAL_INSTANCE=${instanceId}`,
         `CARDINAL_ROLE=${role}`,
         `CARDINAL_HOME=${CARDINAL_HOME}`,
+        // 카디널 MCP 도구는 워커 응답을 오래 기다릴 수 있음 (session_send wait, session_wait 최대 3600초)
+        'MCP_TOOL_TIMEOUT=3700000',
         `PATH=${path.join(ROOT, 'bin')}:${process.env.PATH ?? ''}`,
         ...argv,
       ]),
@@ -498,6 +571,40 @@ export async function settledTurnOf(name: string, res: SendResult, st: SessionSt
     if (t?.complete || Date.now() > deadline) return t;
     await sleep(50);
   }
+}
+
+const MCP_RECONNECT_RE = /reconnected to cardinal/i;
+const MCP_RECONNECT_FAIL_RE = /(failed|error)[^\n]*cardinal|cardinal[^\n]*(failed|error)/i;
+
+// 카디널 서버가 다시 뜨면 claude 는 끊긴 카디널 MCP 를 스스로 다시 붙지 않음 (실측: 도구가 사라진 채로 남음).
+// 서버가 뜬 뒤 살아있는 MCP 세션마다 부름: send 와 같은 락으로 한 줄로 서서, 손 놓았을 때 /mcp reconnect 를 침
+export async function mcpReconnect(name: string, queueTimeoutMs = 600_000): Promise<boolean> {
+  const meta = readMeta(name);
+  if (!meta) throw new Error(`모르는 세션: ${name}`);
+  if (!meta.mcp) throw new Error(`카디널 MCP 없이 띄운 세션: ${name}`);
+  const deadline = Date.now() + queueTimeoutMs;
+  return withLock(path.join(stateDir(meta), 'send.lock'), queueTimeoutMs, async () => {
+    let st = await getStatus(name);
+    if (!st.alive) throw new Error(`세션 안 살아있음: ${name}`);
+    if (st.state === 'busy' || st.state === 'starting') st = await wait(name, { timeoutMs: Math.max(1, deadline - Date.now()) });
+    if (!st.alive || st.state === 'ended') throw new Error(`세션 안 살아있음: ${name}`);
+    if (st.trustPrompt || st.state === 'waiting') throw new Error(`${name}: 다이얼로그 대기 중이라 못 함 (${st.detail ?? st.state})`);
+    if (st.restoredInput) {
+      await tmux.sendKeys(st.tmux, 'C-u', ...Array.from({ length: 40 }, () => ['BSpace', 'C-u']).flat());
+      await sleep(150);
+    }
+    const before = (await tmux.capturePane(st.tmux).catch(() => '')).match(new RegExp(MCP_RECONNECT_RE, 'gi'))?.length ?? 0;
+    await tmux.pasteText(st.tmux, '/mcp reconnect cardinal');
+    await sleep(200);
+    await tmux.sendKeys(st.tmux, 'Enter');
+    for (let i = 0; i < 40; i++) {
+      await sleep(250);
+      const scr = await tmux.capturePane(st.tmux).catch(() => '');
+      if ((scr.match(new RegExp(MCP_RECONNECT_RE, 'gi'))?.length ?? 0) > before) return true;
+      if (MCP_RECONNECT_FAIL_RE.test(scr.split('/mcp reconnect cardinal').pop() ?? '')) return false;
+    }
+    return false;
+  });
 }
 
 export async function keys(name: string, ...k: string[]): Promise<void> {

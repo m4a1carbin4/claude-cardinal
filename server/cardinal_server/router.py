@@ -62,7 +62,8 @@ def _safe_name(name: str) -> str:
 
 
 def format_delivery(ev: dict, route: dict, body: str, cli_path: Path) -> str:
-    sdk = route.get("session_backend") == "sdk"
+    # 카디널 MCP 에 붙은 세션(sdk 는 항상)은 MCP 도구로, 서버 없이 띄운 tmux 세션은 CLI 로 답장
+    mcp = route.get("session_backend") == "sdk" or bool(route.get("session_mcp"))
     where = f"{ev['platform']} #{clean(ev.get('channel_name') or ev.get('channel_id')) or '?'}"
     if ev.get("guild"):
         where += f" ({clean(ev['guild'])})"
@@ -81,7 +82,7 @@ def format_delivery(ev: dict, route: dict, body: str, cli_path: Path) -> str:
             lines.append(f"- {clean(a.get('local_path') or a.get('url'))} ({info})" + (f" 저장 실패: {a['error']}" if a.get("error") else ""))
     if route.get("auto_reply"):
         lines.append("이 이벤트는 턴이 끝나면 마지막 응답이 자동으로 답장됨. 따로 보내고 싶으면 아래 도구 사용.")
-    if sdk:
+    if mcp:
         lines.append(f"답장: mcp__cardinal__reply 도구 (event_id={ev['id']}, text, files)")
     else:
         lines.append(f"답장: {cli_path} reply {ev['id']} \"<답장>\" [--file <경로>]")

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   parent_name       TEXT,
   backend           TEXT NOT NULL DEFAULT 'tmux', -- tmux (CLI + Claude Code TUI) | sdk (서버 안 Claude Agent SDK)
   sdk_options       TEXT,                      -- sdk 세션 설정 (JSON). restart 할 때 그대로 다시 씀
+  mcp               INTEGER NOT NULL DEFAULT 0, -- 카디널 MCP 에 붙어 있음 (sdk 는 항상, tmux 는 서버가 떠 있을 때 만든 것)
   updated_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_name ON sessions(name, created_at);
@@ -128,7 +129,7 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     for k in ("claude_args", "attachments", "files", "external_ids", "data", "sdk_options", "texts", "tools", "result"):
         if k in d and isinstance(d[k], str):
             d[k] = json.loads(d[k])
-    for k in ("alive", "auto_reply", "enabled", "complete", "interrupted"):
+    for k in ("alive", "auto_reply", "enabled", "complete", "interrupted", "mcp"):
         if k in d and d[k] is not None:
             d[k] = bool(d[k])
     return d
@@ -155,6 +156,9 @@ class DB:
                 self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
         if "backend" not in cols:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN backend TEXT NOT NULL DEFAULT 'tmux'")
+        if "mcp" not in cols:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN mcp INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("UPDATE sessions SET mcp=1 WHERE backend='sdk'")
 
     def q(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
         with self.lock:
@@ -178,9 +182,10 @@ class DB:
             """
             INSERT INTO sessions (id, name, role, tmux, cwd, claude_args, created_at, alive,
                                   state, state_at, last_event, detail, tool, transcript_path,
-                                  claude_session_id, parent_id, parent_name, updated_at)
+                                  claude_session_id, parent_id, parent_name, mcp, updated_at)
             VALUES (:id, :name, :role, :tmux, :cwd, :args, :created, :alive,
-                    :state, :state_at, :event, :detail, :tool, :transcript, :claude_sid, :parent_id, :parent_name, :now)
+                    :state, :state_at, :event, :detail, :tool, :transcript, :claude_sid, :parent_id, :parent_name,
+                    :mcp, :now)
             ON CONFLICT(id) DO UPDATE SET
               alive=:alive, state=:state, state_at=:state_at, last_event=:event, detail=:detail,
               tool=:tool, transcript_path=COALESCE(:transcript, transcript_path),
@@ -204,6 +209,7 @@ class DB:
                 "claude_sid": s.get("claudeSessionId") or meta["claudeSessionId"],
                 "parent_id": (meta.get("parent") or {}).get("instanceId"),
                 "parent_name": (meta.get("parent") or {}).get("name"),
+                "mcp": int(bool(meta.get("mcp"))),
                 "now": now(),
             },
         )
@@ -226,9 +232,9 @@ class DB:
             """
             INSERT INTO sessions (id, name, role, tmux, cwd, claude_args, created_at, alive, state, state_at,
                                   last_event, detail, claude_session_id, parent_id, parent_name, backend,
-                                  sdk_options, updated_at)
+                                  sdk_options, mcp, updated_at)
             VALUES (:id, :name, :role, '', :cwd, '[]', :created_at, 0, 'starting', :created_at,
-                    'Create', NULL, :claude_session_id, :parent_id, :parent_name, 'sdk', :sdk_options, :created_at)
+                    'Create', NULL, :claude_session_id, :parent_id, :parent_name, 'sdk', :sdk_options, 1, :created_at)
             """,
             {**row, "sdk_options": json.dumps(row.get("sdk_options") or {})},
         )
@@ -344,7 +350,7 @@ class DB:
         return self.q(
             """
             SELECT r.*, s.name AS session_name, s.state AS session_state, s.alive AS session_alive,
-                   s.backend AS session_backend
+                   s.backend AS session_backend, s.mcp AS session_mcp
             FROM routes r JOIN sessions s ON s.id = r.session_id
             WHERE r.enabled = 1 AND s.deleted_at IS NULL AND s.alive = 1
             ORDER BY r.id

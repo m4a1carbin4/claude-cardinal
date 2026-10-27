@@ -94,7 +94,7 @@ class Sessions:
             self._sdk().sessions.pop(name, None) if self.sdk else None
             self.db.mark_deleted(existing["id"])
         try:
-            await self.cli.new(name, role, prompt, args or [], cwd=cwd, trust=trust)
+            await self.cli.new(name, role, prompt, args or [], cwd=cwd, trust=trust, parent=parent)
         except CliError as e:
             raise SessionError(str(e))
         await self.ingestor.sync()

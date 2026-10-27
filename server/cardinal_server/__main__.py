@@ -30,7 +30,8 @@ def main() -> None:
     if reason := precheck(s):
         print(f"cardinal-server: 시작 안 함 — {reason}", file=sys.stderr)
         sys.exit(1)
-    uvicorn.run(create_app(s), host=s.host, port=s.port, log_level="info")
+    # 오래 걸리는 요청(카디널 MCP 의 session_wait 등)이 있어도 종료가 몇 초 안에 SDK 세션 정리로 넘어가게
+    uvicorn.run(create_app(s), host=s.host, port=s.port, log_level="info", timeout_graceful_shutdown=5)
 
 
 if __name__ == "__main__":

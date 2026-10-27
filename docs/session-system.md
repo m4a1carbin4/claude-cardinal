@@ -8,9 +8,11 @@
 
 ```
  사람 (터미널)        브라우저 / 외부          다른 claude 세션 (마스터)
-      │                    │                         │
-  cardinal CLI    cardinal-server (Python)    cardinal CLI (Bash 도구)
-      └──────────┬─────────┴─────────────────────────┘
+      │                    │                         │ mcp__cardinal__* (/mcp)
+      │                    ▼                         │  (서버 없이 띄운 세션은 Bash로 CLI)
+      │          cardinal-server (Python) ◀──────────┘
+  cardinal CLI             │ cardinal CLI 호출
+      └──────────┬─────────┘
                  ▼
           src/session.ts   ← 생성/조회/제어 공통 로직
             │         │
@@ -53,11 +55,13 @@ CLI는 서버 없이 tmux랑 파일만 직접 만짐. 서버(`server/`, Python)�
 4. tmux 실행:
    ```
    tmux new-session -d -s cardinal-<이름> -c <작업 폴더> -x 200 -y 50 \
-     "exec env CARDINAL_SESSION=<이름> CARDINAL_INSTANCE=<instanceId> CARDINAL_ROLE=<role> CARDINAL_HOME=... PATH=<repo>/bin:\$PATH \
-        'claude' '--session-id' '<uuid>' '--name' '<이름>' '--settings' '<훅 JSON>' \
+     "exec env CARDINAL_SESSION=<이름> CARDINAL_INSTANCE=<instanceId> CARDINAL_ROLE=<role> CARDINAL_HOME=... \
+        MCP_TOOL_TIMEOUT=3700000 PATH=<repo>/bin:\$PATH \
+        'claude' ['--mcp-config' '<카디널 MCP JSON>' '--allowedTools' 'mcp__cardinal'] \
+        '--session-id' '<uuid>' '--name' '<이름>' '--settings' '<훅 JSON>' \
         '--append-system-prompt' '<역할 프롬프트>' [claude 인자...] [첫 프롬프트]"
    ```
-   명령은 tmux 기본 셸이 `-c`로 돌리는 문자열 하나. 인자는 전부 작은따옴표로 감싸서 따옴표·`$`·백틱·줄바꿈이 그대로 감. 환경변수를 `new-session -e`가 아니라 `env`로 넣는 건 `-e`가 tmux 3.2+에만 있어서 (그 전 버전은 `unknown option -- e`로 실패). `exec`라 pane 프로세스는 바로 claude.
+   `[...]` 부분은 카디널 서버가 떠 있을 때만 ([카디널 MCP](mcp.md#세션에-붙이기)). 명령은 tmux 기본 셸이 `-c`로 돌리는 문자열 하나. 인자는 전부 작은따옴표로 감싸서 따옴표·`$`·백틱·줄바꿈이 그대로 감. 환경변수를 `new-session -e`가 아니라 `env`로 넣는 건 `-e`가 tmux 3.2+에만 있어서 (그 전 버전은 `unknown option -- e`로 실패). `exec`라 pane 프로세스는 바로 claude.
 5. `window-size latest` 설정 → 여러 군데서 붙어도 마지막에 만진 쪽 크기 따라감.
 
 4번 tmux 실행이 실패하면 3번에서 쓴 `meta.json`과 훅 폴더를 지우고 `tmux 세션 생성 실패: <tmux 에러>`로 끝냄 (안 뜬 인스턴스를 가리키는 기록이 안 남게).
@@ -69,6 +73,7 @@ claude가 종료되면 tmux 세션도 같이 사라짐.
 - **기록 위치는 항상 고정**: `meta.json`(`$CARDINAL_HOME/sessions/<이름>/`)과 훅 폴더(`$CARDINAL_HOME/hooks/<instanceId>/`)는 작업 폴더와 상관없음. 서버가 보는 위치도 이것뿐. 작업 폴더엔 카디널 파일이 하나도 안 생김.
 - **작업 폴더는 세션별**: 기본은 고정 워크스페이스, `--cwd`(API는 `cwd`, 절대 경로만)로 바꿀 수 있음. 마스터가 만든 워커는 `--cwd`가 없으면 마스터와 같은 폴더 (이미 신뢰한 폴더라 신뢰 다이얼로그도 안 뜸).
 - 서버가 CLI를 부를 땐 `CARDINAL_SESSION`/`CARDINAL_INSTANCE`/`CARDINAL_ROLE`을 지우고 부름. 서버를 카디널 세션 안에서 띄웠어도 웹/API로 만든 세션이 그 세션의 폴더를 물려받지 않게.
+- 마스터 도구(`session_new`)로 만들 땐 서버가 `CARDINAL_PARENT_NAME`/`CARDINAL_PARENT_ID`를 넣어서 부르고, CLI가 그걸 `meta.parent`에 적음 (작업 폴더는 서버가 `--cwd`로 따로 넘김).
 - claude는 트랜스크립트를 `~/.claude/projects/<작업 폴더 경로에서 영숫자 아닌 건 전부 '-'>/<세션 ID>.jsonl` 에 씀 (`CLAUDE_CONFIG_DIR` 쓰면 그 아래). 카디널은 `meta.json`의 `cwd`(실제 경로)와 훅이 알려준 지금 세션 ID로 이 경로를 계산함 (`transcriptPath()` in `src/paths.ts`). 그래서 작업 폴더가 세션마다 달라도, `/tmp` 같은 심볼릭 링크 경로를 줘도, 세션이 죽은 뒤에도 찾을 수 있음.
 
 ### 신뢰 다이얼로그 (처음 쓰는 작업 폴더)
@@ -109,10 +114,15 @@ claude는 처음 보는 폴더에서 "이 폴더를 신뢰하냐" 다이얼로�
 
 ### 역할 프롬프트
 
-- 공통: "너는 카디널이 띄운 세션 `<이름>`, 레벨은 `<role>`", CLI 절대경로 알려줌.
-- 마스터만: 작업 나눌 때 내장 서브 에이전트/워크플로 말고 `cardinal new ... --wait`로 워커 띄우라고 함. 사용자가 따로 요청하면 예외. send/ls/status/report/screen/keys/kill 사용법 포함.
+모델이 카디널을 다루는 길은 둘 중 하나로 정해짐.
 
-CLI를 절대경로로 박는 이유: claude의 Bash 도구가 사용자 셸 프로필로 PATH를 다시 잡아서 tmux `-e PATH`가 안 먹음. 테스트 때 마스터가 `cardinal`을 못 찾았음.
+- **서버가 떠 있으면 (기본)**: 카디널 MCP(`mcp__cardinal__*`)만. 프롬프트는 "카디널은 MCP 도구로만, CLI는 사람용이니 Bash로 부르지 마라" + 외부 이벤트는 `mcp__cardinal__reply`로. 마스터는 `session_new`/`session_send`/`session_wait`/`session_report`/… 로 워커를 다룸. 워커에겐 마스터 도구가 아예 안 보임. 자세한 건 [카디널 MCP](mcp.md).
+- **서버 없이 띄웠거나 `--no-mcp`**: 예전 CLI 방식.
+  - 공통: "너는 카디널이 띄운 세션 `<이름>`, 레벨은 `<role>`", CLI 절대경로 알려줌.
+  - 마스터만: 작업 나눌 때 내장 서브 에이전트/워크플로 말고 `cardinal new ... --wait`로 워커 띄우라고 함. 사용자가 따로 요청하면 예외. send/ls/status/report/screen/keys/kill 사용법 포함.
+  - CLI를 절대경로로 박는 이유: claude의 Bash 도구가 사용자 셸 프로필로 PATH를 다시 잡아서 tmux `-e PATH`가 안 먹음. 테스트 때 마스터가 `cardinal`을 못 찾았음.
+
+어느 쪽으로 떴는지는 `meta.json`의 `mcp` (DB `sessions.mcp`, 웹 UI 세션 정보의 "카디널 도구").
 
 ## 상태
 
@@ -236,11 +246,12 @@ assistant  text          ← 마지막 답 (stop_reason: end_turn)
 ## CLI
 
 ```
-cardinal new <이름> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [-- claude 인자...]
+cardinal new <이름> [--role worker|master] [--cwd DIR] [--trust] [--prompt TEXT] [--wait] [--no-mcp] [-- claude 인자...]
 cardinal ls [--json]
 cardinal status <이름> [--json]
 cardinal send <이름> <텍스트|-> [--wait] [--timeout 초] [--no-enter] [--force]
 cardinal keys <이름> <키...>
+cardinal mcp-reconnect <이름>               # 카디널 MCP 다시 붙이기 (서버가 다시 뜨면 서버가 부름)
 cardinal wait <이름> [--timeout 초]
 cardinal screen <이름> [--lines N]          # Claude Code 는 대체 화면이라 tmux 스크롤백이 거의 없음
 cardinal report <이름> [--tools] [--json]

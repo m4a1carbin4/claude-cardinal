@@ -1,6 +1,13 @@
 // 카디널 서버 API 클라이언트. 토큰은 URL ?token= 으로 한 번 받으면 이 브라우저에 기억해 둠
 import type {
+  AnswerInput,
   ChannelEvent,
+  ContextUsage,
+  McpStatus,
+  Pending,
+  PermissionMode,
+  SdkOptions,
+  SdkTurnRow,
   Reply,
   CreateInput,
   Health,
@@ -86,6 +93,19 @@ export const api = {
   screen: (name: string, lines = 0) => req<{ screen: string }>(`/sessions/${enc(name)}/screen?lines=${lines}`),
   report: (name: string) => req<Report>(`/sessions/${enc(name)}/report`),
   events: (name: string, limit = 200) => req<HookEvent[]>(`/sessions/${enc(name)}/events?limit=${limit}`),
+  // ---- SDK 세션 전용 ----
+  interrupt: (name: string) => req<{ ok: boolean }>(`/sessions/${enc(name)}/interrupt`, { method: 'POST' }),
+  restart: (name: string, body: { resume?: boolean; sdk?: Partial<SdkOptions> } = {}) =>
+    req<Session>(`/sessions/${enc(name)}/restart`, json(body)),
+  pending: (name: string) => req<Pending[]>(`/sessions/${enc(name)}/pending`),
+  answer: (name: string, pid: string, body: AnswerInput) => req<unknown>(`/sessions/${enc(name)}/pending/${enc(pid)}`, json(body)),
+  mcp: (name: string) => req<McpStatus>(`/sessions/${enc(name)}/mcp`),
+  mcpAction: (name: string, server: string, action: 'reconnect' | 'enable' | 'disable') =>
+    req<McpStatus>(`/sessions/${enc(name)}/mcp/${enc(server)}`, json({ action })),
+  setModel: (name: string, model: string | null) => req<{ ok: boolean }>(`/sessions/${enc(name)}/model`, json({ model })),
+  setMode: (name: string, mode: PermissionMode) => req<{ ok: boolean }>(`/sessions/${enc(name)}/permission-mode`, json({ mode })),
+  context: (name: string) => req<ContextUsage>(`/sessions/${enc(name)}/context`),
+  turns: (name: string, limit = 20) => req<SdkTurnRow[]>(`/sessions/${enc(name)}/turns?limit=${limit}`),
   routes: (name: string) => req<Route[]>(`/sessions/${enc(name)}/routes`),
   addRoute: (name: string, r: RouteInput) => req<Route>(`/sessions/${enc(name)}/routes`, json(r)),
   deleteRoute: (id: number) => req<{ ok: boolean }>(`/routes/${id}`, { method: 'DELETE' }),
