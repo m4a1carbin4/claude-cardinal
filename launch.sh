@@ -31,6 +31,7 @@ usage() {
   -h, --help             이 도움말
 
 환경변수: CARDINAL_HOME, CARDINAL_TOKEN, DISCORD_TOKEN 등은 서버에 그대로 넘어감.
+CARDINAL_WEB_HOSTS=a.example,b.example 이면 웹 UI 를 그 이름으로도 열 수 있음 (vite allowedHosts).
 EOF
 }
 
