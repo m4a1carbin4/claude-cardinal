@@ -5,6 +5,7 @@
 - 웹 터미널: /ws/term/<이름>
 - 메시지 채널: 디스코드(DISCORD_TOKEN 있으면) + local, 라우트 따라 세션에 전달, cardinal reply 로 답장
 - SDK 모드(--sdk): tmux 없이 서버 안에서 Claude Agent SDK 세션을 돌림 (backend=sdk). 채널·라우트는 같이 씀
+- 웹드라이브: 사람과 세션이 같이 쓰는 파일 공간 (/api/drive, 세션마다 /sessions/<이름>, drive.py)
 """
 
 import asyncio
@@ -28,6 +29,7 @@ from .channel.local_adapter import LocalAdapter
 from .cli import Cli, CliError
 from .config import REPO_ROOT, Settings, load
 from .db import DB
+from .drive import ATTACHMENTS, Drive, DriveError
 from .ingest import Ingestor
 from .router import Router
 from .running import running_elsewhere
@@ -192,11 +194,28 @@ class ModeIn(BaseModel):
 
 class SendIn(BaseModel):
     text: str
+    attachments: list[str] = Field(default_factory=list)  # 웹드라이브 경로. 지시 뒤에 첨부 안내(로컬 경로 포함)가 붙음
     wait: bool = False
     timeout_s: int | None = None
     submit: bool = True
     force: bool = False
     now: bool = False  # 작업 중이어도 안 기다리고 바로 (진행 중인 턴에 끼어듦)
+
+
+class DrivePathIn(BaseModel):
+    path: str
+
+
+class DriveTextIn(BaseModel):
+    path: str
+    content: str
+    overwrite: bool = True  # False 면 새 파일만 (있으면 400)
+
+
+class DriveMoveIn(BaseModel):
+    src: str
+    dst: str  # 있는 폴더면 그 안으로, 아니면 새 이름
+    overwrite: bool = False
 
 
 class KeysIn(BaseModel):
@@ -223,21 +242,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 만들고 참조를 안 들고 있으면 태스크가 끝나기 전에 GC 로 사라질 수 있음
     bg_tasks: set[asyncio.Task] = set()
 
-    def sessions_changed() -> None:
-        t = asyncio.get_running_loop().create_task(
-            events_hub.publish({"type": "sessions", "sessions": [pub(x) for x in db.sessions()]})
-        )
+    def bg(coro) -> None:
+        t = asyncio.get_running_loop().create_task(coro)
         bg_tasks.add(t)
         t.add_done_callback(bg_tasks.discard)
+
+    main_loop: list[asyncio.AbstractEventLoop] = []
+
+    def drive_changed(path: str) -> None:
+        # MCP 도구는 파일 작업을 스레드에서 해서 거기서 불릴 수도 있음 → 서버 루프로 넘김
+        publish = lambda: bg(events_hub.publish({"type": "drive", "path": path}))  # noqa: E731
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if main_loop:
+                main_loop[0].call_soon_threadsafe(publish)
+            return
+        publish()
+
+    # 웹드라이브. 파일이 바뀌면 웹 UI 가 그 폴더를 다시 읽게 알림
+    drive = Drive(settings.drive, settings.drive_max_upload, drive_changed)
+
+    def ensure_drive_dirs() -> None:
+        # 모든 세션은 자기 드라이브 폴더가 있음 (CLI 로 직접 만든 세션도 수집되면 여기서 생김)
+        for row in db.sessions():
+            with contextlib.suppress(OSError, DriveError):
+                drive.ensure_session(row["name"])
+
+    def sessions_changed() -> None:
+        ensure_drive_dirs()
+        bg(events_hub.publish({"type": "sessions", "sessions": [pub(x) for x in db.sessions()]}))
 
     ingestor = Ingestor(settings, db, sessions_changed)
     # sdk 세션 기록 정리(지난 서버가 남긴 것)는 SDK 모드가 꺼져 있어도 함. 새로 만들기는 --sdk 일 때만
     sdk_mgr = SdkManager(settings, db, sessions_changed)
-    sessions = Sessions(settings, db, cli, ingestor, sdk_mgr)
+    sessions = Sessions(settings, db, cli, ingestor, sdk_mgr, drive)
     router = Router(settings, db, sessions, channel_hub.publish)
     sdk_mgr.router, sdk_mgr.facade = router, sessions
     # 세션 안 모델이 카디널을 다루는 MCP (tmux·SDK 공통). SDK 세션은 여기 주소와 키로 붙음
-    cmcp = CardinalMcp(settings, db, sessions, router, ingestor)
+    cmcp = CardinalMcp(settings, db, sessions, router, ingestor, drive)
     sdk_mgr.mcp_secret = cmcp.secret
     local = LocalAdapter(channel_hub.publish)
     router.add_adapter(local)
@@ -263,7 +306,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # uvicorn 이 로깅 설정을 끝낸 뒤라 여기서 붙임
         for name in ("uvicorn.access", "uvicorn.error"):
             logging.getLogger(name).addFilter(_RedactToken())
+        main_loop.append(asyncio.get_running_loop())
         await ingestor.sync()
+        ensure_drive_dirs()
         await sdk_mgr.startup()
         ingest_task = asyncio.create_task(ingestor.run())
         mcp_ctx = cmcp.run()
@@ -422,7 +467,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             timeout_s = body.timeout_s or (DEFAULT_WAIT_TIMEOUT_S if body.wait else None)
             return await sessions.send(name, body.text, wait=body.wait, timeout_s=timeout_s,
-                                       submit=body.submit, force=body.force, now=body.now)
+                                       submit=body.submit, force=body.force, now=body.now,
+                                       attachments=body.attachments)
         except SessionError as e:
             raise sess_err(e)
 
@@ -590,6 +636,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except RuntimeError as e:
             raise HTTPException(502, str(e))
 
+    # ---------- 웹드라이브 ----------
+
+    def drive_call(fn, *a, **kw):
+        try:
+            return fn(*a, **kw)
+        except DriveError as e:
+            raise HTTPException(404 if str(e).startswith(("없음", "파일이 없음")) else 400, str(e))
+        except OSError as e:
+            raise HTTPException(400, f"파일 작업 실패: {e}")
+
+    async def save_uploads(dir_path: str, files: list[UploadFile], overwrite: bool) -> list[dict]:
+        out = []
+        for f in files:
+            try:
+                out.append(await drive.save_upload(dir_path, f.filename or "file", f.read, overwrite))
+            except DriveError as e:
+                raise HTTPException(413 if "너무 큼" in str(e) else 400, str(e))
+            except OSError as e:
+                raise HTTPException(400, f"저장 실패: {e}")
+        return out
+
+    @app.get("/api/drive", dependencies=api)
+    async def drive_list(path: str = "/"):
+        """폴더 내용 (entries: name, path, type, size, mtime, content_type, local_path)"""
+        return drive_call(drive.list, path)
+
+    @app.get("/api/drive/file", dependencies=api)
+    async def drive_file(path: str, download: bool = False):
+        """파일 받기. download=false 면 브라우저에서 바로 보기 (이미지, PDF 등)"""
+        f = drive_call(drive.file, path)
+        return FileResponse(f, filename=f.name, content_disposition_type="attachment" if download else "inline")
+
+    @app.get("/api/drive/text", dependencies=api)
+    async def drive_read_text(path: str):
+        """UTF-8 글 파일 내용 (웹 편집기용, 2MB 까지)"""
+        return drive_call(drive.read_text, path)
+
+    @app.put("/api/drive/text", dependencies=api)
+    async def drive_write_text(body: DriveTextIn):
+        """글 파일 만들기/고치기 (폴더는 알아서 만듦)"""
+        return drive_call(drive.write_text, body.path, body.content, "/", body.overwrite)
+
+    @app.post("/api/drive/upload", status_code=201, dependencies=api)
+    async def drive_upload(path: str = Form("/shared"), overwrite: bool = Form(False),
+                           files: list[UploadFile] = File(...)):
+        """path 폴더에 파일 올리기 (없으면 만듦). 같은 이름은 overwrite 가 아니면 'a (1).txt' 로"""
+        drive_call(drive.local, path)
+        return await save_uploads(path, files, overwrite)
+
+    @app.post("/api/drive/mkdir", status_code=201, dependencies=api)
+    async def drive_mkdir(body: DrivePathIn):
+        return drive_call(drive.mkdir, body.path)
+
+    @app.post("/api/drive/move", dependencies=api)
+    async def drive_move(body: DriveMoveIn):
+        return drive_call(drive.move, body.src, body.dst, body.overwrite)
+
+    @app.delete("/api/drive", dependencies=api)
+    async def drive_delete(path: str, recursive: bool = False):
+        drive_call(drive.delete, path, recursive)
+        return {"ok": True}
+
+    @app.post("/api/sessions/{name}/attachments", status_code=201, dependencies=api)
+    async def session_attachments(name: str, files: list[UploadFile] = File(...)):
+        """요청에 붙일 파일을 세션 드라이브 폴더(attachments/)에 저장. 돌려받은 path 를 send 의 attachments 로"""
+        session_or_404(name)
+        drive.ensure_session(name)
+        return await save_uploads(f"{drive.session_path(name)}/{ATTACHMENTS}", files, False)
+
     # ---------- 웹소켓 ----------
 
     @app.websocket("/ws/term/{name}")
@@ -626,7 +741,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """SDK 세션 실시간 연결 (프로그램용: 음성/모션 등).
         받음: {"type":"hello"}, {"type":"state"}, {"type":"message","message":<SDK 메시지>}, {"type":"turn"},
               {"type":"pending"}, {"type":"pending_done"}, {"type":"result","id":..,"ok":..,"data"|"error":..}
-        보냄: {"type":"send","text":..,"wait":bool,"now":bool,"force":bool,"timeout_s":..,"id":<내 요청 ID>},
+        보냄: {"type":"send","text":..,"attachments":[<드라이브 경로>],"wait":bool,"now":bool,"force":bool,"timeout_s":..,
+               "id":<내 요청 ID>},
               {"type":"interrupt","id":..}, {"type":"answer","pending_id":..,"answers":{..}|"allow":bool,"id":..}"""
         if not await ws_auth(ws):
             return
@@ -652,9 +768,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 kind = cmd.get("type")
                 if kind == "send":
-                    data = await sess.send(str(cmd.get("text") or ""), wait=bool(cmd.get("wait")),
-                                           timeout_s=cmd.get("timeout_s"), now_=bool(cmd.get("now")),
-                                           force=bool(cmd.get("force")))
+                    data = await sessions.send(name, str(cmd.get("text") or ""), wait=bool(cmd.get("wait")),
+                                               timeout_s=cmd.get("timeout_s"), now=bool(cmd.get("now")),
+                                               force=bool(cmd.get("force")),
+                                               attachments=[str(a) for a in cmd.get("attachments") or []])
                 elif kind == "interrupt":
                     await sess.interrupt()
                     data = {"ok": True}
@@ -678,7 +795,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 except ValueError:
                     await q.put({"type": "result", "ok": False, "error": "JSON 아님"})
                     continue
-                if not str(cmd.get("text") or "").strip() and cmd.get("type") == "send":
+                if cmd.get("type") == "send" and not str(cmd.get("text") or "").strip() and not cmd.get("attachments"):
                     await q.put({"type": "result", "id": cmd.get("id"), "ok": False, "error": "text 필요"})
                     continue
                 t = asyncio.create_task(run(cmd))

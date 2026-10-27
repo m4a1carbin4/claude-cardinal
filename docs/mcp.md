@@ -45,8 +45,10 @@
 | --- | :-: | :-: | --- |
 | `reply(event_id, text, files[])` | ✓ | ✓ | 채널 이벤트에 답장. files는 작업 폴더 기준 상대 경로 가능, 최대 10개·각 10MB |
 | `session_list()` | ✓ | ✓ | 세션 목록 (이름, 역할, 방식, 상태, 작업 폴더, 만든 세션) |
-| `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?)` | | ✓ | 워커 만들기. cwd·backend 기본은 부른 세션과 같게. 부모 기록 |
-| `session_send(name, text, wait=true, timeout_s?, now?)` | | ✓ | 지시 보내기 (작업 중이면 끝난 뒤 차례로) |
+| `drive_list` `drive_read` `drive_write` `drive_move` `drive_delete` | ✓ | ✓ | 웹드라이브 파일 다루기 (목록, 글 읽기/쓰기, 옮기기, 지우기). 경로를 `/` 없이 쓰면 내 세션 폴더 기준 → [웹드라이브](drive.md) |
+| `drive_upload(src, path?, keep_source?)` / `drive_load(path, dest?)` | ✓ | ✓ | 로컬 → 드라이브로 옮기기 / 드라이브 → 로컬로 복사 |
+| `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?, attachments?)` | | ✓ | 워커 만들기. cwd·backend 기본은 부른 세션과 같게. 부모 기록 |
+| `session_send(name, text, wait=true, timeout_s?, now?, attachments?)` | | ✓ | 지시 보내기 (작업 중이면 끝난 뒤 차례로). `attachments`: 넘길 드라이브 파일 |
 | `session_wait(name, timeout_s?)` | | ✓ | 지금 일이 끝날 때까지 기다리고 결과 보고. 질문/권한 대기에 걸리면 바로 |
 | `session_report(name)` | | ✓ | 살아있나, 작업중/완료/중단, 마지막 사람 턴 전체, 답 기다리는 질문(SDK) |
 | `session_kill(name, purge?)` | | ✓ | 끝내기 |

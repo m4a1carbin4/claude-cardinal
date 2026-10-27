@@ -560,6 +560,7 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 | WS | `/ws/events` | 흐름 F |
 | WS | `/ws/channel` | 흐름 F + local 입력 |
 | POST | `/mcp/worker`, `/mcp/master` | 카디널 MCP (streamable HTTP, stateless). 세션 키 필요, `GET`은 405. [카디널 MCP](mcp.md) |
+| GET/POST/PUT/DELETE | `/api/drive…`, `POST /api/sessions/<이름>/attachments` | 웹드라이브 (목록·받기·글 읽기/쓰기·올리기·폴더·옮기기·지우기, 요청 첨부). send의 `attachments`. [웹드라이브](drive.md) |
 
 ---
 

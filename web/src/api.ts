@@ -3,6 +3,8 @@ import type {
   AnswerInput,
   ChannelEvent,
   ContextUsage,
+  DriveDir,
+  DriveEntry,
   McpStatus,
   Pending,
   PermissionMode,
@@ -87,7 +89,7 @@ export const api = {
   session: (name: string) => req<Session>(`/sessions/${enc(name)}`),
   create: (body: CreateInput) => req<Session>('/sessions', json(body)),
   kill: (name: string, purge = false) => req<{ ok: boolean }>(`/sessions/${enc(name)}${purge ? '?purge=true' : ''}`, { method: 'DELETE' }),
-  send: (name: string, body: { text: string; wait?: boolean; timeout_s?: number; submit?: boolean; now?: boolean; force?: boolean }) =>
+  send: (name: string, body: { text: string; attachments?: string[]; wait?: boolean; timeout_s?: number; submit?: boolean; now?: boolean; force?: boolean }) =>
     req<SendResult>(`/sessions/${enc(name)}/send`, json(body)),
   keys: (name: string, keys: string[]) => req<{ ok: boolean }>(`/sessions/${enc(name)}/keys`, json({ keys })),
   screen: (name: string, lines = 0) => req<{ screen: string }>(`/sessions/${enc(name)}/screen?lines=${lines}`),
@@ -120,7 +122,58 @@ export const api = {
   },
   inbound: (body: { content: string; channel: string; author: string; mentions_bot?: boolean }) =>
     req<ChannelEvent & { matched: string[] }>('/channel/inbound', json(body)),
+  // ---- 웹드라이브 ----
+  driveList: (path: string) => req<DriveDir>(`/drive?path=${enc(path)}`),
+  driveReadText: (path: string) => req<DriveEntry & { content: string }>(`/drive/text?path=${enc(path)}`),
+  driveWriteText: (path: string, content: string, overwrite = true) =>
+    req<DriveEntry>('/drive/text', { method: 'PUT', body: JSON.stringify({ path, content, overwrite }) }),
+  driveMkdir: (path: string) => req<DriveEntry>('/drive/mkdir', json({ path })),
+  driveMove: (src: string, dst: string, overwrite = false) => req<DriveEntry>('/drive/move', json({ src, dst, overwrite })),
+  driveDelete: (path: string, recursive = false) =>
+    req<{ ok: boolean }>(`/drive?path=${enc(path)}${recursive ? '&recursive=true' : ''}`, { method: 'DELETE' }),
 };
+
+// 드라이브 파일 주소 (<a href>, <img> 용이라 토큰은 쿼리로)
+export function driveFileUrl(path: string, download = false): string {
+  const q = new URLSearchParams({ path });
+  if (download) q.set('download', 'true');
+  if (token) q.set('token', token);
+  return `/api/drive/file?${q}`;
+}
+
+// 파일 올리기 + 진행률 (fetch 는 업로드 진행률을 못 줘서 XHR).
+// to: 드라이브 폴더면 그 안에, {session} 이면 그 세션의 첨부 폴더(attachments/)에
+export function uploadFiles(
+  to: { dir: string } | { session: string },
+  files: File[],
+  onProgress?: (ratio: number) => void,
+): Promise<DriveEntry[]> {
+  const form = new FormData();
+  if ('dir' in to) form.set('path', to.dir);
+  for (const f of files) form.append('files', f, f.name);
+  const url = 'dir' in to ? '/api/drive/upload' : `/api/sessions/${enc(to.session)}/attachments`;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    if (token) xhr.setRequestHeader('authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+    xhr.onload = () => {
+      let body: unknown = {};
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        // JSON 아님
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body as DriveEntry[]);
+      else {
+        const d = (body as { detail?: unknown }).detail;
+        reject(new ApiError(xhr.status, typeof d === 'string' ? d : `HTTP ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new ApiError(0, '업로드 실패 (연결)'));
+    xhr.send(form);
+  });
+}
 
 // 웹소켓 주소 (토큰은 쿼리로. 브라우저 웹소켓은 헤더를 못 붙임)
 export function wsUrl(path: string, params: Record<string, string | number> = {}): string {

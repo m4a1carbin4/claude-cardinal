@@ -2,18 +2,20 @@ import { Suspense, lazy, useEffect, useState } from 'react';
 import { api } from '../api';
 import { ago, clock, stateLabel } from '../format';
 import type { Session } from '../types';
+import { DrivePanel } from './DrivePanel';
 import { LivePanel, McpPanel, SettingsPanel } from './SdkPanels';
 import { EventsPanel, ReportPanel, RoutesPanel, ScreenPanel, SendPanel } from './SessionPanels';
 
 // xterm 이 번들의 대부분이라 터미널 탭을 열 때만 불러옴
 const TerminalView = lazy(() => import('./TerminalView').then((m) => ({ default: m.TerminalView })));
 
-type Tab = 'terminal' | 'screen' | 'live' | 'send' | 'report' | 'events' | 'mcp' | 'settings' | 'routes';
+type Tab = 'terminal' | 'screen' | 'live' | 'send' | 'report' | 'drive' | 'events' | 'mcp' | 'settings' | 'routes';
 const TMUX_TABS: { id: Tab; label: string }[] = [
   { id: 'terminal', label: '터미널' },
   { id: 'screen', label: '화면' },
   { id: 'send', label: '보내기' },
   { id: 'report', label: '결과' },
+  { id: 'drive', label: '드라이브' },
   { id: 'events', label: '훅 이벤트' },
   { id: 'routes', label: '라우트' },
 ];
@@ -22,6 +24,7 @@ const SDK_TABS: { id: Tab; label: string }[] = [
   { id: 'live', label: '대화' },
   { id: 'send', label: '보내기' },
   { id: 'report', label: '결과' },
+  { id: 'drive', label: '드라이브' },
   { id: 'events', label: '훅 이벤트' },
   { id: 'mcp', label: 'MCP' },
   { id: 'settings', label: '설정' },
@@ -243,6 +246,7 @@ export function SessionView({ session, version, onGone }: { session: Session; ve
         {tab === 'live' && <LivePanel session={session} onRestart={(resume) => restart(resume).catch(() => {})} />}
         {tab === 'send' && <SendPanel name={session.name} sdk={sdk} />}
         {tab === 'report' && <ReportPanel name={session.name} version={version} />}
+        {tab === 'drive' && <DrivePanel key={session.name} root={`/sessions/${session.name}`} />}
         {tab === 'events' && <EventsPanel name={session.name} version={version} />}
         {tab === 'mcp' && <McpPanel name={session.name} alive={alive} />}
         {tab === 'settings' && <SettingsPanel session={session} onRestart={restart} />}

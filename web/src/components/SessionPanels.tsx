@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useInterval } from '../hooks';
 import { PASTE_MAX_BYTES, api, byteLength } from '../api';
+import { AttachBar, attachHandlers, useAttachments } from './AttachBar';
 import { clock, unwrapPasted } from '../format';
 import type { HookEvent, Report, Route, RouteInput, SendResult } from '../types';
 import { RouteFields, emptyRoute } from './RouteFields';
@@ -18,6 +19,7 @@ const KEYS: { label: string; keys: string[]; title: string }[] = [
 
 // sdk: 입력창이 없어서 키·붙여넣기만·tmux 크기 한도가 없음
 export function SendPanel({ name, sdk = false }: { name: string; sdk?: boolean }) {
+  const att = useAttachments(name);
   const [text, setText] = useState('');
   const [wait, setWait] = useState(true);
   const [timeoutS, setTimeoutS] = useState(900);
@@ -32,16 +34,17 @@ export function SendPanel({ name, sdk = false }: { name: string; sdk?: boolean }
   const tooBig = !sdk && bytes > PASTE_MAX_BYTES;
 
   async function send() {
-    if (!text.trim() || tooBig) return;
+    if ((!text.trim() && !att.items.length) || tooBig || att.uploading) return;
     setBusy(true);
     setError('');
     setResult(null);
     try {
       // 붙여넣기만(submit=false)이면 턴이 시작되지 않으니 기다릴 게 없음
       const w = wait && submit;
-      const r = await api.send(name, { text, wait: w, submit, now, force, timeout_s: w ? timeoutS : undefined });
+      const r = await api.send(name, { text, attachments: att.paths, wait: w, submit, now, force, timeout_s: w ? timeoutS : undefined });
       setResult({ ...r, pasteOnly: !submit });
       setText('');
+      att.clear();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -60,16 +63,17 @@ export function SendPanel({ name, sdk = false }: { name: string; sdk?: boolean }
 
   return (
     <div className="panel">
-      <label>
+      <label {...attachHandlers(att)}>
         메시지
         <textarea
           rows={5}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === 'Enter' && send()}
-          placeholder="세션에 보낼 지시 (⌘/Ctrl + Enter 로 보내기)"
+          placeholder="세션에 보낼 지시 (⌘/Ctrl + Enter 로 보내기). 파일은 끌어 놓거나 붙여넣기"
         />
       </label>
+      <AttachBar session={name} att={att} />
       {!sdk && (
         <div className={`bytes ${tooBig ? 'err' : ''}`}>
           {bytes.toLocaleString()} / {PASTE_MAX_BYTES.toLocaleString()} 바이트
@@ -99,7 +103,7 @@ export function SendPanel({ name, sdk = false }: { name: string; sdk?: boolean }
           <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} /> 강제 (--force)
         </label>
         <span className="spacer" />
-        <button className="primary" onClick={send} disabled={busy || !text.trim() || tooBig}>
+        <button className="primary" onClick={send} disabled={busy || (!text.trim() && !att.items.length) || tooBig || att.uploading}>
           {busy ? (wait ? '응답 기다리는 중…' : '보내는 중…') : '보내기'}
         </button>
       </div>

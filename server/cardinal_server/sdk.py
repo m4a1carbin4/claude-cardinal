@@ -57,6 +57,10 @@ COMMON_PROMPT = """
 그 이벤트에 답할 때는 응답 텍스트만으로는 전달되지 않는다. 반드시 `mcp__cardinal__reply` 도구로 보내라
 (event_id, text, files: 첨부할 로컬 파일 경로 목록, 최대 10개·각 10MB). 이벤트 첨부파일은 메시지에 적힌 로컬 경로에 있다.
 사용자에게 확인이 필요하면 AskUserQuestion 을 써도 된다 (카디널이 사람에게 전달하고 답을 돌려줌).
+웹드라이브(사람과 같이 쓰는 파일 공간)의 네 폴더는 /sessions/{name}, 공용은 /shared 다. 사람에게 줄 결과 파일은
+`mcp__cardinal__drive_upload` 로 올리고, 드라이브 파일은 `drive_list` 로 보고 `drive_load` 로 작업 폴더에 가져온다.
+글 파일은 `drive_read` / `drive_write` 로 바로 읽고 쓰고, `drive_move` / `drive_delete` 로 정리한다.
+사람이 붙인 첨부는 지시 끝에 드라이브 경로와 로컬 경로로 안내된다.
 """
 
 MASTER_PROMPT = """
@@ -282,7 +286,8 @@ class SdkSession:
             can_use_tool=self._can_use_tool,
             hooks={ev: [HookMatcher(hooks=[self._hook])] for ev in HOOK_EVENTS},
             include_partial_messages=bool(o.get("partial")),
-            add_dirs=list(o.get("add_dirs") or []),
+            # 웹드라이브는 작업 폴더 밖이어도 묻지 않고 읽고 쓰게
+            add_dirs=[*(o.get("add_dirs") or []), os.path.realpath(self.mgr.settings.drive)],
             env=env,
             stderr=lambda line: log.debug("[%s] %s", self.name, line.rstrip()),
         )

@@ -326,3 +326,25 @@ button.ghost.on { border-color: var(--accent); }
 .mic-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; align-items: end; border: 1px dashed var(--line); border-radius: 10px; padding: 8px 10px; }
 .mic-settings .row { grid-column: 1 / -1; }
 .err-text { color: var(--err); }
+
+/* 웹드라이브 */
+.drive-view { height: 100%; overflow: auto; }
+.drive.drag { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 12px; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.crumbs button:disabled { opacity: 1; font-weight: 600; cursor: default; }
+.drive-table td { vertical-align: middle; }
+.drive-table .name-col { word-break: break-all; }
+.drive-table .num-col { text-align: right; white-space: nowrap; }
+.drive-table .act-col { white-space: nowrap; width: 1%; }
+.drive-table .act-col .row { gap: 4px; flex-wrap: nowrap; }
+button.link, a.link { background: none; border: none; padding: 0; color: var(--text); cursor: pointer; font: inherit; text-align: left; text-decoration: none; }
+button.link:hover, a.link:hover { color: var(--accent); text-decoration: underline; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+.progress { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--accent); transition: width 0.15s; }
+.modal.wide-modal { width: min(960px, 100%); }
+textarea.editor { min-height: 50vh; font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, "D2Coding", monospace; resize: vertical; }
+.attach-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.file-chip { display: inline-flex; align-items: center; gap: 4px; }
+.chip-x { background: none; border: none; padding: 0 2px; color: var(--muted); cursor: pointer; font-size: 0.75rem; }
+.chip-x:hover { color: var(--err); }

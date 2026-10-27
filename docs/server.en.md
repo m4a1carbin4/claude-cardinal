@@ -560,6 +560,7 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 | WS | `/ws/events` | Flow F |
 | WS | `/ws/channel` | Flow F + local input |
 | POST | `/mcp/worker`, `/mcp/master` | Cardinal MCP (streamable HTTP, stateless). Session key required; `GET` → 405. See [Cardinal MCP](mcp.en.md) |
+| GET/POST/PUT/DELETE | `/api/drive…`, `POST /api/sessions/<name>/attachments` | webdrive (list·download·text read/write·upload·folders·move·delete, request attachments). `attachments` on send. See [webdrive](drive.en.md) |
 
 ---
 

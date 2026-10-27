@@ -45,8 +45,10 @@ Now:
 | --- | :-: | :-: | --- |
 | `reply(event_id, text, files[])` | ✓ | ✓ | reply to a channel event. files may be relative to the working dir; max 10, 10MB each |
 | `session_list()` | ✓ | ✓ | session list (name, role, backend, state, working dir, creator) |
-| `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?)` | | ✓ | create a worker. cwd and backend default to the caller's. Records the parent |
-| `session_send(name, text, wait=true, timeout_s?, now?)` | | ✓ | send an instruction (queued after the current work) |
+| `drive_list` `drive_read` `drive_write` `drive_move` `drive_delete` | ✓ | ✓ | work with webdrive files (list, read/write text, move, delete). A path without `/` is relative to my session folder → [webdrive](drive.en.md) |
+| `drive_upload(src, path?, keep_source?)` / `drive_load(path, dest?)` | ✓ | ✓ | move local → drive / copy drive → local |
+| `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?, attachments?)` | | ✓ | create a worker. cwd and backend default to the caller's. Records the parent |
+| `session_send(name, text, wait=true, timeout_s?, now?, attachments?)` | | ✓ | send an instruction (queued after the current work). `attachments`: drive files to hand over |
 | `session_wait(name, timeout_s?)` | | ✓ | wait for the current work to finish, then report. Returns right away on a question/permission wait |
 | `session_report(name)` | | ✓ | alive?, working/done/interrupted, last human turn in full, pending questions (SDK) |
 | `session_kill(name, purge?)` | | ✓ | end a session |

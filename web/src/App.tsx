@@ -2,18 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, api, hasToken, setToken } from './api';
 import { ChannelPanel } from './components/ChannelPanel';
 import { CreateSession } from './components/CreateSession';
+import { DrivePanel } from './components/DrivePanel';
 import { SessionList } from './components/SessionList';
 import { SessionView } from './components/SessionView';
-import { useInterval, useJsonSocket } from './hooks';
+import { DRIVE_EVENT, useInterval, useJsonSocket } from './hooks';
 import type { Health, Session } from './types';
 
-type View = 'sessions' | 'channel';
+type View = 'sessions' | 'channel' | 'drive';
 
 const SEL_KEY = 'cardinal.selected';
-// 주소 해시로 화면 고르기: #s=<세션 이름> / #channel (북마크·링크 공유용)
+// 주소 해시로 화면 고르기: #s=<세션 이름> / #channel / #drive (북마크·링크 공유용)
 const fromHash = (): { view: View; session: string | null } => {
   const h = location.hash.slice(1);
-  if (h === 'channel') return { view: 'channel', session: null };
+  if (h === 'channel' || h === 'drive') return { view: h, session: null };
   const m = /^s=(.+)$/.exec(h);
   return { view: 'sessions', session: m ? decodeURIComponent(m[1]) : null };
 };
@@ -54,7 +55,7 @@ export default function App() {
 
   // 화면 상태를 주소 해시에 반영, 뒤로 가기 등으로 해시가 바뀌면 따라감
   useEffect(() => {
-    const h = view === 'channel' ? '#channel' : selected ? `#s=${encodeURIComponent(selected)}` : '';
+    const h = view !== 'sessions' ? `#${view}` : selected ? `#s=${encodeURIComponent(selected)}` : '';
     if (location.hash !== h) history.replaceState(null, '', h || location.pathname + location.search);
   }, [view, selected]);
   useEffect(() => {
@@ -70,6 +71,8 @@ export default function App() {
 
   // 서버가 세션 목록이 바뀔 때마다 푸시. 삭제된 것까지 보려면 REST 로 한 번 더
   const live = useJsonSocket(needToken ? null : '/ws/events', (m) => {
+    // 드라이브 폴더가 바뀜 → 그 폴더를 보고 있는 화면들이 다시 읽음 (useDriveChanged)
+    if (m.type === 'drive') window.dispatchEvent(new CustomEvent(DRIVE_EVENT, { detail: m.path }));
     if (m.type !== 'sessions') return;
     setVersion((v) => v + 1);
     if (showDeleted) api.sessions(true).then(setSessions, handleErr);
@@ -117,6 +120,9 @@ export default function App() {
           <button className={view === 'channel' ? 'on' : ''} onClick={() => setView('channel')}>
             채널
           </button>
+          <button className={view === 'drive' ? 'on' : ''} onClick={() => setView('drive')}>
+            드라이브
+          </button>
         </nav>
         <span className="spacer" />
         <div className="status-chips">
@@ -163,6 +169,10 @@ export default function App() {
         <main className="main">
           {view === 'channel' ? (
             <ChannelPanel sessions={sessions} />
+          ) : view === 'drive' ? (
+            <div className="drive-view">
+              <DrivePanel />
+            </div>
           ) : current ? (
             <SessionView key={current.id} session={current} version={version} onGone={() => setSelected(null)} />
           ) : (

@@ -265,3 +265,18 @@ export interface CreateInput {
   backend?: Backend;
   sdk?: Partial<SdkOptions>;
 }
+
+// ---- 웹드라이브 (/api/drive) ----
+export interface DriveEntry {
+  name: string;
+  path: string; // 드라이브 경로 (/shared/a.txt, /sessions/<이름>/…)
+  type: 'file' | 'dir';
+  size: number | null;
+  mtime: number; // 초
+  content_type: string | null;
+  local_path: string; // 서버 컴퓨터의 실제 경로 (세션이 바로 읽을 수 있는 곳)
+}
+
+export interface DriveDir extends DriveEntry {
+  entries: DriveEntry[];
+}

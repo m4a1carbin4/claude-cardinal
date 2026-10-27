@@ -3,6 +3,7 @@ import { api } from '../api';
 import { clock } from '../format';
 import { useSocket } from '../hooks';
 import type { AskQuestion, ContextUsage, McpStatus, Pending, PermissionMode, SdkTurnRow, Session, State, TurnResult } from '../types';
+import { AttachBar, attachHandlers, useAttachments } from './AttachBar';
 import { MicInput } from './MicInput';
 import { PERMISSION_MODES, SdkOptionsFields, formFromOptions, toOptions } from './SdkOptionsFields';
 
@@ -213,13 +214,14 @@ export function LivePanel({ session, onRestart }: { session: Session; onRestart:
   const [limit, setLimit] = useState(30);
   const [live, setLive] = useState<LiveItem[]>([]);
   const [streaming, setStreaming] = useState('');
-  const [queued, setQueued] = useState<{ id: string; text: string }[]>([]);
+  const [queued, setQueued] = useState<{ id: string; text: string; files?: string[] }[]>([]);
   const [pending, setPending] = useState<Pending[]>(session.pending ?? []);
   const [status, setStatus] = useState<SdkStatus>({ state: session.state, alive: session.alive, tool: session.tool, detail: session.detail });
   const [text, setText] = useState('');
   const [now, setNow] = useState(false);
   const [force, setForce] = useState(false);
   const [error, setError] = useState('');
+  const att = useAttachments(name);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true); // 맨 아래 보고 있으면 새 내용이 와도 따라 내려감
 
@@ -249,7 +251,9 @@ export function LivePanel({ session, onRestart }: { session: Session; onRestart:
         setLive([]);
         setStreaming('');
         setQueued((q) => {
-          const i = q.findIndex((x) => x.text === m.turn.prompt);
+          // 첨부가 있으면 서버가 지시 뒤에 첨부 안내를 붙여서 앞부분만 같음
+          const p = String(m.turn.prompt ?? '');
+          const i = q.findIndex((x) => x.text === p || (!!x.files?.length && p.startsWith(x.text)));
           return i < 0 ? q : [...q.slice(0, i), ...q.slice(i + 1)];
         });
         loadTurns();
@@ -302,23 +306,29 @@ export function LivePanel({ session, onRestart }: { session: Session; onRestart:
   }, [turns, live, streaming, queued, pending]);
 
   // override: 음성 입력에서 "바로 보내기" 로 넘어온 글 (입력창 내용 대신)
+  // 첨부는 드라이브 경로만 보냄 (서버가 지시 뒤에 안내를 붙임)
   async function submit(override?: string) {
     const t = (override ?? text).trim();
-    if (!t) return;
+    const attachments = att.paths;
+    if ((!t && !attachments.length) || att.uploading) return;
     setError('');
     const id = `w${Date.now().toString(36)}`;
-    const msg = { type: 'send', id, text: t, wait: false, now, force };
+    const msg = { type: 'send', id, text: t, attachments, wait: false, now, force };
+    const files = att.items.map((x) => x.name);
+    const sent = () => {
+      setQueued((q) => [...q, { id, text: t, files }]);
+      if (override === undefined) setText('');
+      att.clear();
+    };
     stick.current = true;
     if (send(msg)) {
-      setQueued((q) => [...q, { id, text: t }]);
-      if (override === undefined) setText('');
+      sent();
       return;
     }
     // 소켓이 끊겨 있으면 REST 로
     try {
-      await api.send(name, { text: t, wait: false, now, force });
-      setQueued((q) => [...q, { id, text: t }]);
-      if (override === undefined) setText('');
+      await api.send(name, { text: t, attachments, wait: false, now, force });
+      sent();
     } catch (e) {
       setError((e as Error).message);
     }
@@ -359,6 +369,7 @@ export function LivePanel({ session, onRestart }: { session: Session; onRestart:
           <div key={q.id} className="bubble user queued">
             <div className="b-meta">보냄 · 차례 기다리는 중이거나 처리 중</div>
             {q.text}
+            {!!q.files?.length && <div className="b-meta">📎 {q.files.join(', ')}</div>}
           </div>
         ))}
         {(live.length > 0 || streaming) && (
@@ -409,8 +420,9 @@ export function LivePanel({ session, onRestart }: { session: Session; onRestart:
             }
           />
         )}
+        {alive && <AttachBar session={name} att={att} />}
         {alive ? (
-          <div className="row">
+          <div className="row" {...attachHandlers(att)}>
             <textarea
               className="grow"
               rows={2}
@@ -422,10 +434,10 @@ export function LivePanel({ session, onRestart }: { session: Session; onRestart:
                   void submit();
                 }
               }}
-              placeholder="메시지 (Enter 보내기, Shift+Enter 줄바꿈). 작업 중이면 끝난 뒤 차례로 들어감"
+              placeholder="메시지 (Enter 보내기, Shift+Enter 줄바꿈). 파일은 끌어 놓거나 붙여넣기. 작업 중이면 끝난 뒤 차례로 들어감"
             />
             <div className="col">
-              <button className="primary" onClick={() => submit()} disabled={!text.trim()}>
+              <button className="primary" onClick={() => submit()} disabled={(!text.trim() && !att.items.length) || att.uploading}>
                 보내기
               </button>
               <button className="ghost small danger" onClick={interrupt} disabled={!working} title="진행 중인 턴 중단 (tmux 의 Esc)">

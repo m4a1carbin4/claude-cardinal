@@ -1,7 +1,7 @@
 """카디널 MCP 서버: 세션 안 모델(tmux Claude Code / SDK)이 카디널을 다루는 유일한 길.
 
 서버가 떠 있으면 모델은 CLI 대신 이 도구들만 씀 (CLI 는 사람이 직접 개입할 때용).
-- /mcp/worker: reply, session_list
+- /mcp/worker: reply, session_list, 웹드라이브(drive_list/read/write/move/delete/load/upload)
 - /mcp/master: 위 + 세션 만들기/보내기/기다리기/결과/정리/화면/키/질문 답하기
 누가 불렀는지는 헤더로: X-Cardinal-Instance (세션 고유 키) + X-Cardinal-Key (서버 비밀 키로 만든 HMAC).
 CLI 도 같은 비밀 키 파일(~/.cardinal/mcp.key)로 키를 만들어 tmux 세션에 넣어줌.
@@ -24,6 +24,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from .channel.base import OutboundFile
 from .config import Settings
 from .db import DB
+from .drive import Drive, DriveError
 
 log = logging.getLogger("cardinal.mcp")
 
@@ -36,7 +37,11 @@ KEY_HEADER = "x-cardinal-key"
 
 WORKER_INSTRUCTIONS = (
     "카디널(Cardinal) 세션 도구. `[cardinal:event <ID>]` 로 시작하는 외부 채널 이벤트에 답할 때는 응답 텍스트가 아니라 "
-    "reply 도구로 보내야 전달됨."
+    "reply 도구로 보내야 전달됨. "
+    "웹드라이브는 사람(웹 UI)과 세션이 같이 쓰는 파일 공간: 너의 폴더는 /sessions/<너의 세션 이름>, 공용은 /shared. "
+    "파일 다루기: drive_list(목록) drive_read/drive_write(글 파일 읽기/만들기·고치기) drive_move(옮기기·이름 바꾸기) "
+    "drive_delete(지우기), 로컬 파일과 주고받기: drive_upload(로컬 → 드라이브로 옮김) drive_load(드라이브 → 로컬로 복사). "
+    "드라이브 경로를 / 없이 쓰면 너의 폴더 기준."
 )
 MASTER_INSTRUCTIONS = WORKER_INSTRUCTIONS + (
     " 마스터는 일을 나눌 때 내장 서브 에이전트 대신 session_new 로 독립 워커 세션을 띄워 맡기고, "
@@ -78,8 +83,9 @@ def _json(x: Any) -> str:
 
 
 class CardinalMcp:
-    def __init__(self, settings: Settings, db: DB, sessions: Any, router: Any, ingestor: Any):
+    def __init__(self, settings: Settings, db: DB, sessions: Any, router: Any, ingestor: Any, drive: Drive):
         self.settings = settings
+        self.drive = drive
         self.db = db
         self.sessions = sessions  # sessions.Sessions
         self.router = router
@@ -161,13 +167,33 @@ class CardinalMcp:
                 "files: 첨부할 로컬 파일 경로 (작업 폴더 기준 상대 경로 가능, 최대 10개·각 10MB)"))
             srv.add_tool(self.session_list, name="session_list",
                          description="카디널 세션 목록과 상태 (이름, 역할, 방식, 상태, 작업 폴더, 만든 세션)")
+            srv.add_tool(self.drive_list, name="drive_list", description=(
+                "웹드라이브 폴더 내용 (사람과 같이 쓰는 파일 공간). path 를 안 주면 너의 세션 폴더, / 로 시작하면 드라이브 루트 기준 "
+                "(/shared 공용, /sessions/<이름> 세션별). 항목마다 local_path 가 있어 바로 읽을 수도 있음"))
+            srv.add_tool(self.drive_read, name="drive_read", description=(
+                "웹드라이브 글 파일(UTF-8, 2MB 까지) 내용 읽기. 바이너리는 drive_load 로 로컬에 복사해서"))
+            srv.add_tool(self.drive_write, name="drive_write", description=(
+                "웹드라이브에 글 파일 만들기/고치기 (내용 전체를 씀, 폴더는 알아서 만듦). overwrite=false 면 새 파일만"))
+            srv.add_tool(self.drive_move, name="drive_move", description=(
+                "웹드라이브 안에서 옮기기/이름 바꾸기. dst 가 있는 폴더면 그 안으로"))
+            srv.add_tool(self.drive_delete, name="drive_delete", description=(
+                "웹드라이브 파일/폴더 지우기 (폴더는 recursive=true 여야 내용째). /shared, /sessions/<이름> 자체는 못 지움"))
+            srv.add_tool(self.drive_load, name="drive_load", description=(
+                "웹드라이브 파일/폴더를 로컬로 복사 (드라이브 쪽은 그대로). dest 를 안 주면 작업 폴더에 같은 이름으로, "
+                "상대 경로는 작업 폴더 기준, 있는 폴더면 그 안으로"))
+            srv.add_tool(self.drive_upload, name="drive_upload", description=(
+                "로컬 파일/폴더를 웹드라이브로 옮김 (사람이 웹 UI 에서 받아 갈 수 있음). 기본은 이동이라 로컬 원본은 없어짐 "
+                "(keep_source=true 면 복사). src 상대 경로는 작업 폴더 기준. path 를 안 주면 너의 세션 폴더에 같은 이름으로, "
+                "/ 로 끝나거나 있는 폴더면 그 안으로"))
         m = self.master
         m.add_tool(self.session_new, name="session_new", description=(
             "독립 워커 세션 만들기 (내장 서브 에이전트 대신). cwd 를 안 주면 너와 같은 작업 폴더, backend 를 안 주면 너와 같은 방식. "
-            "prompt 를 주면 바로 첫 지시를 보내고, wait=true 면 그 턴의 응답까지 기다려 돌려줌"))
+            "prompt 를 주면 바로 첫 지시를 보내고, wait=true 면 그 턴의 응답까지 기다려 돌려줌. "
+            "attachments: 첫 지시에 붙일 웹드라이브 경로 목록"))
         m.add_tool(self.session_send, name="session_send", description=(
             "세션에 지시 보내기. 작업 중이면 끝난 뒤 차례로 들어감. wait=true(기본)면 그 턴의 응답(last)까지 기다림. "
-            "오래 걸릴 일은 wait=false 로 보내고 session_wait 로 기다려도 됨"))
+            "오래 걸릴 일은 wait=false 로 보내고 session_wait 로 기다려도 됨. "
+            "attachments: 같이 넘길 웹드라이브 파일 경로 목록 (받는 세션에 로컬 경로와 함께 안내됨)"))
         m.add_tool(self.session_wait, name="session_wait", description=(
             "세션이 지금 하는 일을 끝낼 때까지 기다린 뒤 결과 보고를 돌려줌 (질문/권한 대기에 걸리면 바로 돌려줌)"))
         m.add_tool(self.session_report, name="session_report", description=(
@@ -216,7 +242,7 @@ class CardinalMcp:
 
     async def session_new(self, name: str, prompt: str | None = None, role: str = "worker", cwd: str | None = None,
                           backend: str | None = None, wait: bool = False, timeout_s: int = DEFAULT_WAIT_S,
-                          ctx: Context = None) -> str:
+                          attachments: list[str] | None = None, ctx: Context = None) -> str:
         me = self._caller(ctx)
         if role not in ("worker", "master"):
             raise ToolError("role 은 worker 또는 master")
@@ -226,7 +252,8 @@ class CardinalMcp:
                 parent={"id": me["id"], "name": me["name"]}, trust=True)
             out: dict[str, Any] = {"created": row.get("name"), "backend": row.get("backend"), "cwd": row.get("cwd")}
             if prompt:
-                out["send"] = await self.sessions.send(name, prompt, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S))
+                out["send"] = await self.sessions.send(name, prompt, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S),
+                                                       attachments=self._drive_paths(me, attachments))
         except ToolError:
             raise
         except Exception as e:
@@ -234,11 +261,12 @@ class CardinalMcp:
         return _json(out)
 
     async def session_send(self, name: str, text: str, wait: bool = True, timeout_s: int = DEFAULT_WAIT_S,
-                           now: bool = False, ctx: Context = None) -> str:
+                           now: bool = False, attachments: list[str] | None = None, ctx: Context = None) -> str:
         me = self._caller(ctx)
         self._not_self(me, name, "보내기")
         try:
-            res = await self.sessions.send(name, text, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S), now=now)
+            res = await self.sessions.send(name, text, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S), now=now,
+                                           attachments=self._drive_paths(me, attachments))
         except Exception as e:
             raise ToolError(f"실패: {e}")
         return _json(res)
@@ -307,3 +335,78 @@ class CardinalMcp:
             return _json(self.sessions.sdk_session(name).answer(pending_id, answers, allow, message, None))
         except Exception as e:
             raise ToolError(f"실패: {e}")
+
+    # ---------- 웹드라이브 ----------
+
+    def _home(self, me: dict) -> str:
+        """부른 세션의 드라이브 폴더 (/ 없는 드라이브 경로의 기준)"""
+        self.drive.ensure_session(me["name"])
+        return self.drive.session_path(me["name"])
+
+    def _drive_paths(self, me: dict, paths: list[str] | None) -> list[str]:
+        try:
+            return [self.drive.norm(p, self._home(me)) for p in paths or []]
+        except DriveError as e:
+            raise ToolError(str(e))
+
+    @staticmethod
+    def _local(me: dict, p: str) -> Path:
+        return Path(os.path.expanduser(p)) if os.path.isabs(os.path.expanduser(p)) else Path(me["cwd"]) / p
+
+    async def drive_list(self, path: str = "", ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            return _json(self.drive.list(path or ".", self._home(me)))
+        except (DriveError, OSError) as e:
+            raise ToolError(str(e))
+
+    async def drive_load(self, path: str, dest: str = "", overwrite: bool = False, ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            out = await asyncio.to_thread(self.drive.load_local, path, self._home(me),
+                                          self._local(me, dest or "."), overwrite)
+        except (DriveError, OSError) as e:
+            raise ToolError(str(e))
+        return _json({"loaded": self.drive.norm(path, self._home(me)), "local_path": str(out)})
+
+    async def drive_upload(self, src: str, path: str = "", keep_source: bool = False, overwrite: bool = False,
+                           ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            e = await asyncio.to_thread(self.drive.upload_local, self._local(me, src), path, self._home(me),
+                                        keep_source, overwrite)
+        except (DriveError, OSError) as e:
+            raise ToolError(str(e))
+        return _json({"uploaded": e["path"], "local_path": e["local_path"], "size": e["size"],
+                      "moved": not keep_source})
+
+    async def drive_read(self, path: str, ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            return self.drive.read_text(path, self._home(me))["content"]
+        except (DriveError, OSError) as e:
+            raise ToolError(str(e))
+
+    async def drive_write(self, path: str, content: str, overwrite: bool = True, ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            e = self.drive.write_text(path, content, self._home(me), overwrite)
+        except (DriveError, OSError) as e:
+            raise ToolError(str(e))
+        return _json({"written": e["path"], "size": e["size"], "local_path": e["local_path"]})
+
+    async def drive_move(self, src: str, dst: str, overwrite: bool = False, ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            e = self.drive.move(src, dst, overwrite, self._home(me))
+        except (DriveError, OSError) as e:
+            raise ToolError(str(e))
+        return _json({"moved": e["path"]})
+
+    async def drive_delete(self, path: str, recursive: bool = False, ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            await asyncio.to_thread(self.drive.delete, path, recursive, self._home(me))
+        except (DriveError, OSError) as e:
+            raise ToolError(str(e))
+        return f"지움: {self.drive.norm(path, self._home(me))}"

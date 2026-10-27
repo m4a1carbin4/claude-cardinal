@@ -150,6 +150,7 @@ CARDINAL_TOKEN=xxx uv run cardinal-server  # 토큰 걸기 (?token=xxx 또는 Be
 cardinal reply evt_71363e3e "답장" --file result.png
 ```
 - 세션 안 모델은 `/mcp/worker`, `/mcp/master`(카디널 MCP)로 카디널을 다룸 → [docs/mcp.md](docs/mcp.md)
+- 웹드라이브: 사람과 세션이 같이 쓰는 파일 공간 (`~/.cardinal/drive`, 세션마다 `/sessions/<이름>`, 공용 `/shared`). 웹에서 올리고 받고 고치고, 세션은 `drive_*` MCP 도구로 같은 CRUD, 요청에 파일 붙이기 → [docs/drive.md](docs/drive.md)
 
 API랑 채널 자세한 건 [docs/server.md](docs/server.md).
 
@@ -161,7 +162,8 @@ pnpm dev                               # 개발: http://localhost:5173, /api·/w
 ```
 
 세션 목록(실시간) · 새 세션(tmux / SDK, 작업 폴더, 신뢰 자동 수락, SDK 옵션, 라우트) · 세션별 터미널 / 메시지·키 보내기 / 결과 / 훅 이벤트 / 라우트 · SDK 세션은 대화(실시간, 질문·권한 답하기) / MCP / 설정 · 채널 이벤트→전달→답장 흐름과 local 메시지 넣기 · 디스코드 연결 상태.
-주소 해시로 화면을 고를 수 있음: `/#s=<세션 이름>`, `/#channel`. 자세한 건 [docs/web-ui.md](docs/web-ui.md).
+· 드라이브(파일 올리기·받기·편집, 세션 폴더 탭, 요청에 파일 첨부).
+주소 해시로 화면을 고를 수 있음: `/#s=<세션 이름>`, `/#channel`, `/#drive`. 자세한 건 [docs/web-ui.md](docs/web-ui.md).
 
 ### SDK 모드 (tmux 없이)
 

@@ -62,3 +62,17 @@ export function useInterval(fn: () => void, ms: number | null) {
     return () => clearInterval(id);
   }, [ms]);
 }
+
+// 웹드라이브가 바뀌었다는 알림 (/ws/events 의 {"type":"drive","path":폴더}). App 이 받아서 창 이벤트로 뿌림
+export const DRIVE_EVENT = 'cardinal:drive';
+export function useDriveChanged(path: string, fn: () => void) {
+  const saved = useRef(fn);
+  saved.current = fn;
+  useEffect(() => {
+    const on = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === path) saved.current();
+    };
+    window.addEventListener(DRIVE_EVENT, on);
+    return () => window.removeEventListener(DRIVE_EVENT, on);
+  }, [path]);
+}

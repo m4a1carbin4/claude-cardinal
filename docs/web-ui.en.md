@@ -53,7 +53,7 @@ Every session field (identity key, backend, Cardinal tools (MCP / CLI), tmux, cu
 ## Screens
 
 ```
-┌ top: Cardinal · [세션] [채널] ····· live ● · alive n · working n · Discord status · token ┐
+┌ top: Cardinal · [세션] [채널] [드라이브] ····· live ● · alive n · working n · Discord status · token ┐
 ├ left: [+ 새 세션] / session list (state dot, role, state, working dir) ┬ right: selected session or channel ┤
 ```
 
@@ -105,6 +105,14 @@ The 🎤 button above the input box: click to record, click again to stop. The a
 - The mic only opens in a secure context: `127.0.0.1`/`localhost` or https. Opened with `--host 0.0.0.0` and visited over http from another device, the button is disabled
 - Measured (this Mac, Chrome, WebGPU f16, speech generated with macOS `say`): turbo Korean 3.7s → about 1.0s, exact ("안녕하세요. 오늘 회의 자료를 정리해서 요약해 주세요."); English 2.8s → 0.95s, exact. base: 0.86s, Korean differing only in a "?" and spacing. The real mic recording path (permission prompt) couldn't be covered by automated testing
 
+### Drive / attachments
+
+A file space shared by humans and sessions ([webdrive](drive.en.md)). The top "드라이브" (`/#drive`) shows the whole drive; the "드라이브" tab in session detail (tmux and SDK) starts in that session's folder (`/sessions/<name>`).
+
+- Upload (button·drag-and-drop, progress), new folder, new/edit text file (⌘/Ctrl+S), rename (starting with `/` moves), delete (asks once more), download, copy drive path·local path. Clicking a file name opens it in a new tab.
+- When a session runs `drive_upload`/`drive_write`, the folder being viewed refreshes right away via the `/ws/events` notification.
+- Input box on the conversation and send tabs: pick with "📎 파일" (or drag-and-drop / paste) and it's uploaded straight to `/sessions/<name>/attachments/` and shown as a chip. "드라이브에서" (from drive) picks an existing file. On send, the server appends a note with drive path + local path after the instruction. Attachments alone are fine too.
+
 ### Channel
 
 - For each received event: event ID, content, attachments (size, save failures), deliveries (pending/sent/failed + reason), replies (reply/auto reply, failure reason, attachment names).
@@ -118,7 +126,7 @@ If the server runs with `CARDINAL_TOKEN`, open the page once with `?token=…` (
 
 ### Choosing a screen by URL
 
-`/#s=<session name>` (session detail), `/#channel` (channel). The current view is reflected in the hash, so reload and bookmarks keep it.
+`/#s=<session name>` (session detail), `/#channel` (channel), `/#drive` (drive). The current view is reflected in the hash, so reload and bookmarks keep it.
 
 ## Files
 
@@ -136,6 +144,7 @@ If the server runs with `CARDINAL_TOKEN`, open the page once with `?token=…` (
 | `web/src/components/SessionView.tsx` | session detail, session info, tabs (per backend; terminal loaded on demand), interrupt / restart |
 | `web/src/components/SessionPanels.tsx` | Screen / Send / Result / Hook events / Routes |
 | `web/src/components/TerminalView.tsx` | xterm.js + `/ws/term` |
+| `web/src/components/DrivePanel.tsx`, `AttachBar.tsx` | webdrive explorer·editor, request attachments |
 | `web/src/components/ChannelPanel.tsx` | channel events, direct replies, local injection, local reply downloads |
 | `web/src/styles.css` | light/dark, narrow screens |
 

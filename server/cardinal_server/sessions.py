@@ -11,6 +11,7 @@ from typing import Any
 from .cli import Cli, CliError
 from .config import Settings
 from .db import DB
+from .drive import Drive, DriveError
 from .ingest import Ingestor
 from .sdk import SdkError, SdkManager
 
@@ -23,12 +24,14 @@ class SessionError(Exception):
 
 
 class Sessions:
-    def __init__(self, settings: Settings, db: DB, cli: Cli, ingestor: Ingestor, sdk: SdkManager | None):
+    def __init__(self, settings: Settings, db: DB, cli: Cli, ingestor: Ingestor, sdk: SdkManager | None,
+                 drive: Drive):
         self.settings = settings
         self.db = db
         self.cli = cli
         self.ingestor = ingestor
         self.sdk = sdk
+        self.drive = drive
 
     def backend_of(self, name: str) -> str | None:
         row = self.db.session_by_name(name)
@@ -76,6 +79,8 @@ class Sessions:
                 raise SessionError(f"tmux 세션이 쓰는 이름: {name} (kill --purge 하고 다시)")
             if (self.settings.sessions_dir / name / "meta.json").exists():
                 raise SessionError(f"tmux 세션 기록이 남아 있는 이름: {name} (cardinal kill {name} --purge)")
+            # 첫 지시를 받기 전에 자기 드라이브 폴더가 있게
+            self.drive.ensure_session(name)
             try:
                 sess = await mgr.create(name, role, self._resolve_cwd(cwd), dict(sdk or {}), parent, prompt)
             except SdkError as e:
@@ -93,15 +98,30 @@ class Sessions:
             # 끝난 sdk 세션 이름은 넘겨받음 (기록은 삭제 표시로 남김)
             self._sdk().sessions.pop(name, None) if self.sdk else None
             self.db.mark_deleted(existing["id"])
+        self.drive.ensure_session(name)
+        # 드라이브를 작업 폴더 밖이어도 묻지 않고 읽게. --add-dir 은 값을 여러 개 받는 옵션이라
+        # = 로 붙여야 뒤에 오는 첫 지시를 폴더로 먹지 않음
+        claude_args = [*(args or []), f"--add-dir={self.drive.root}"]
         try:
-            await self.cli.new(name, role, prompt, args or [], cwd=cwd, trust=trust, parent=parent)
+            await self.cli.new(name, role, prompt, claude_args, cwd=cwd, trust=trust, parent=parent)
         except CliError as e:
             raise SessionError(str(e))
         await self.ingestor.sync()
         return self.db.session_by_name(name) or {}
 
+    def with_attachments(self, text: str, attachments: list[str] | None) -> str:
+        if not attachments:
+            return text
+        try:
+            note = self.drive.attachment_note(self.drive.attachment_entries(attachments))
+        except DriveError as e:
+            raise SessionError(str(e))
+        return f"{text.rstrip()}\n\n{note}" if text.strip() else note
+
     async def send(self, name: str, text: str, *, wait: bool = False, timeout_s: float | None = None,
-                   submit: bool = True, force: bool = False, now: bool = False) -> Any:
+                   submit: bool = True, force: bool = False, now: bool = False,
+                   attachments: list[str] | None = None) -> Any:
+        text = self.with_attachments(text, attachments)
         if self.backend_of(name) == "sdk":
             if not submit:
                 raise SessionError("SDK 세션엔 입력창이 없어서 붙여넣기만(submit=false)은 못 함")
