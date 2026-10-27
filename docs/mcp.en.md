@@ -25,8 +25,8 @@ Now:
 ```
                     cardinal-server (FastAPI)
                      └ /mcp  ── CardinalMcp.app
-                          ├ /mcp/worker  → MCPServer "cardinal" (reply, session_list)
-                          └ /mcp/master  → MCPServer "cardinal" (above + 8 session tools)
+                          ├ /mcp/worker  → MCPServer "cardinal" (reply, session_list, session_send/wait/report → existing workers only, drive_*)
+                          └ /mcp/master  → MCPServer "cardinal" (above + session_new/kill/screen/keys/answer, can call anyone)
                                ▲ checks X-Cardinal-Instance / X-Cardinal-Key (401 / 403)
               ┌────────────────┴────────────────┐
    tmux claude (started by the CLI)        SDK session (in the server)
@@ -48,15 +48,17 @@ Now:
 | `drive_list` `drive_read` `drive_write` `drive_move` `drive_delete` | ✓ | ✓ | work with webdrive files (list, read/write text, move, delete). A path without `/` is relative to my session folder → [webdrive](drive.en.md) |
 | `drive_upload(src, path?, keep_source?)` / `drive_load(path, dest?)` | ✓ | ✓ | move local → drive / copy drive → local |
 | `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?, attachments?)` | | ✓ | create a worker. cwd and backend default to the caller's. Records the parent |
-| `session_send(name, text, wait=true, timeout_s?, now?, attachments?)` | | ✓ | send an instruction (queued after the current work). `attachments`: drive files to hand over |
-| `session_wait(name, timeout_s?)` | | ✓ | wait for the current work to finish, then report. Returns right away on a question/permission wait |
-| `session_report(name)` | | ✓ | alive?, working/done/interrupted, last human turn in full, pending questions (SDK) |
+| `session_send(name, text, wait=true, timeout_s?, now?, attachments?)` | ✓* | ✓ | send an instruction (queued after the current work). `attachments`: drive files to hand over |
+| `session_wait(name, timeout_s?)` | ✓* | ✓ | wait for the current work to finish, then report. Returns right away on a question/permission wait |
+| `session_report(name)` | ✓* | ✓ | alive?, working/done/interrupted, last human turn in full, pending questions (SDK) |
 | `session_kill(name, purge?)` | | ✓ | end a session |
 | `session_screen(name, lines?)` | | ✓ | screen of a tmux session (check approval dialogs) |
 | `session_keys(name, keys[])` | | ✓ | keys to a tmux session (handle dialogs) |
 | `session_answer(name, pending_id, answers?, allow?, message?)` | | ✓ | answer an SDK session's question/permission |
 
 - send/wait/kill/keys on yourself are refused.
+- **Worker rules (✓\*)**: workers can't create sessions (no `session_new`). Instead they can hand work to **existing workers** with `session_send`/`session_wait`/`session_report` and get the result back. Calling a master or an unknown session is refused (`워커는 마스터를 부를 수 없음` = workers can't call masters, `모르는 세션 … 워커는 새 세션을 못 만듦` = unknown session, workers can't create sessions). Masters can call anyone.
+- **Deadlock guard**: the server tracks who is waiting on whom (`session_send wait=true`, `session_wait`) and refuses a wait that would loop back to the caller. E.g. w1 calls w2 with wait, and inside that turn w2 sends to w1 with wait: w1's turn can't end, so both would hang until timeout → `교착: …` (deadlock) error. `wait=false` isn't blocked.
 - Waiting tools (`session_send wait`, `session_wait`, `session_new wait`) cap at 3600s. The session side's MCP timeout is raised with `MCP_TOOL_TIMEOUT=3700000` (ms) (tmux via env, SDK via `env`).
 - All tools go through the server's `Sessions` (backend dispatch), so a tmux master can create SDK workers and an SDK master tmux workers.
 
@@ -95,6 +97,7 @@ When the server creates a session from a master tool, it passes the parent to th
 Prompts for MCP sessions (tmux: `MCP_*_PROMPT` in `src/session.ts`, SDK: `sdk.py`; same content):
 
 - Common: "drive Cardinal only via `mcp__cardinal__*`; the CLI is for humans, don't call it through Bash"; `[cardinal:event <ID>]` marks an external event and replies only arrive via `mcp__cardinal__reply`
+- Worker: can't create sessions; hands work to existing workers with `session_send`/`session_wait`/`session_report` (not masters). Can read/write other sessions' drive folders
 - Master: `session_new` workers instead of built-in subagents, `session_send`/`session_wait`/`session_report`, when stuck `session_screen`+`session_keys` (tmux) / `session_answer` (SDK), `session_kill`
 
 The reply hint at the end of channel deliveries matches the session: sessions with `sessions.mcp` (SDK always) get `mcp__cardinal__reply`, others `cardinal reply …`.

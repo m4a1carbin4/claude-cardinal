@@ -1,8 +1,9 @@
 """카디널 MCP 서버: 세션 안 모델(tmux Claude Code / SDK)이 카디널을 다루는 유일한 길.
 
 서버가 떠 있으면 모델은 CLI 대신 이 도구들만 씀 (CLI 는 사람이 직접 개입할 때용).
-- /mcp/worker: reply, session_list, 웹드라이브(drive_list/read/write/move/delete/load/upload)
-- /mcp/master: 위 + 세션 만들기/보내기/기다리기/결과/정리/화면/키/질문 답하기
+- /mcp/worker: reply, session_list, 있는 워커 부르기(session_send/wait/report), 웹드라이브(drive_*)
+- /mcp/master: 위 + 세션 만들기/정리/화면/키/질문 답하기. 마스터는 워커·마스터 누구든 부름
+워커는 새 세션을 못 만들고, 이미 있는 워커에게만 일을 맡김 (마스터는 못 부름).
 누가 불렀는지는 헤더로: X-Cardinal-Instance (세션 고유 키) + X-Cardinal-Key (서버 비밀 키로 만든 HMAC).
 CLI 도 같은 비밀 키 파일(~/.cardinal/mcp.key)로 키를 만들어 tmux 세션에 넣어줌.
 """
@@ -41,11 +42,13 @@ WORKER_INSTRUCTIONS = (
     "웹드라이브는 사람(웹 UI)과 세션이 같이 쓰는 파일 공간: 너의 폴더는 /sessions/<너의 세션 이름>, 공용은 /shared. "
     "파일 다루기: drive_list(목록) drive_read/drive_write(글 파일 읽기/만들기·고치기) drive_move(옮기기·이름 바꾸기) "
     "drive_delete(지우기), 로컬 파일과 주고받기: drive_upload(로컬 → 드라이브로 옮김) drive_load(드라이브 → 로컬로 복사). "
-    "드라이브 경로를 / 없이 쓰면 너의 폴더 기준."
+    "드라이브 경로를 / 없이 쓰면 너의 폴더 기준. 다른 세션 폴더(/sessions/<그 이름>)도 읽고 쓸 수 있음 (결과를 주고받을 때). "
+    "새 세션은 못 만들지만 이미 있는 워커에게는 session_send / session_wait / session_report 로 일을 맡기고 결과를 받을 수 있음 "
+    "(session_list 로 확인)."
 )
 MASTER_INSTRUCTIONS = WORKER_INSTRUCTIONS + (
     " 마스터는 일을 나눌 때 내장 서브 에이전트 대신 session_new 로 독립 워커 세션을 띄워 맡기고, "
-    "session_send / session_wait / session_report 로 지시하고 결과를 받음."
+    "session_send / session_wait / session_report 로 지시하고 결과를 받음 (마스터는 다른 마스터도 부를 수 있음)."
 )
 
 
@@ -91,6 +94,8 @@ class CardinalMcp:
         self.router = router
         self.ingestor = ingestor
         self.secret = load_key(settings.home)
+        # 누가 누구의 응답을 기다리는 중인지 (세션 이름 → 기다리는 상대들). 교착 막기용
+        self._waits: dict[str, list[str]] = {}
         self.worker = MCPServer("cardinal", instructions=WORKER_INSTRUCTIONS)
         self.master = MCPServer("cardinal", instructions=MASTER_INSTRUCTIONS)
         self._register()
@@ -185,19 +190,20 @@ class CardinalMcp:
                 "로컬 파일/폴더를 웹드라이브로 옮김 (사람이 웹 UI 에서 받아 갈 수 있음). 기본은 이동이라 로컬 원본은 없어짐 "
                 "(keep_source=true 면 복사). src 상대 경로는 작업 폴더 기준. path 를 안 주면 너의 세션 폴더에 같은 이름으로, "
                 "/ 로 끝나거나 있는 폴더면 그 안으로"))
+        for srv, who in ((self.worker, "이미 있는 워커 세션"), (self.master, "세션")):
+            srv.add_tool(self.session_send, name="session_send", description=(
+                f"{who}에 지시 보내기. 작업 중이면 끝난 뒤 차례로 들어감. wait=true(기본)면 그 턴의 응답(last)까지 기다림. "
+                "오래 걸릴 일은 wait=false 로 보내고 session_wait 로 기다려도 됨. 서로 기다리게 되는 호출(교착)은 거부됨. "
+                "attachments: 같이 넘길 웹드라이브 파일 경로 목록 (받는 세션에 로컬 경로와 함께 안내됨)"))
+            srv.add_tool(self.session_wait, name="session_wait", description=(
+                f"{who}가 지금 하는 일을 끝낼 때까지 기다린 뒤 결과 보고를 돌려줌 (질문/권한 대기에 걸리면 바로 돌려줌)"))
+            srv.add_tool(self.session_report, name="session_report", description=(
+                f"{who} 결과 보고: 살아있는지, 작업중/완료/중단, 마지막 사람 턴의 지시와 응답 전체, 답 기다리는 질문(SDK)"))
         m = self.master
         m.add_tool(self.session_new, name="session_new", description=(
             "독립 워커 세션 만들기 (내장 서브 에이전트 대신). cwd 를 안 주면 너와 같은 작업 폴더, backend 를 안 주면 너와 같은 방식. "
             "prompt 를 주면 바로 첫 지시를 보내고, wait=true 면 그 턴의 응답까지 기다려 돌려줌. "
             "attachments: 첫 지시에 붙일 웹드라이브 경로 목록"))
-        m.add_tool(self.session_send, name="session_send", description=(
-            "세션에 지시 보내기. 작업 중이면 끝난 뒤 차례로 들어감. wait=true(기본)면 그 턴의 응답(last)까지 기다림. "
-            "오래 걸릴 일은 wait=false 로 보내고 session_wait 로 기다려도 됨. "
-            "attachments: 같이 넘길 웹드라이브 파일 경로 목록 (받는 세션에 로컬 경로와 함께 안내됨)"))
-        m.add_tool(self.session_wait, name="session_wait", description=(
-            "세션이 지금 하는 일을 끝낼 때까지 기다린 뒤 결과 보고를 돌려줌 (질문/권한 대기에 걸리면 바로 돌려줌)"))
-        m.add_tool(self.session_report, name="session_report", description=(
-            "세션 결과 보고: 살아있는지, 작업중/완료/중단, 마지막 사람 턴의 지시와 응답 전체, 답 기다리는 질문(SDK)"))
         m.add_tool(self.session_kill, name="session_kill",
                    description="세션 끝내기 (purge=true 면 기록도 삭제 표시)")
         m.add_tool(self.session_screen, name="session_screen", description=(
@@ -240,6 +246,38 @@ class CardinalMcp:
         if name == me["name"]:
             raise ToolError(f"자기 자신에게는 {what} 못 함")
 
+    def _callable(self, me: dict, name: str, what: str) -> None:
+        """부를 수 있는 상대인지: 자기 자신 X, 워커는 이미 있는 워커만 (마스터는 누구든)"""
+        self._not_self(me, name, what)
+        if me["role"] == "master":
+            return
+        row = self.db.session_by_name(name)
+        if not row or row.get("deleted_at"):
+            raise ToolError(f"모르는 세션: {name} (워커는 새 세션을 못 만듦, session_list 로 있는 워커 확인)")
+        if row["role"] != "worker":
+            raise ToolError(f"워커는 마스터를 부를 수 없음: {name}")
+
+    @contextlib.contextmanager
+    def _waiting(self, me: dict, name: str):
+        """me 가 name 을 기다리는 동안 표시. name 쪽에서 (거쳐서라도) me 를 기다리고 있으면 교착이라 거부.
+        (A 가 B 를 기다리는 턴 안에서 B 가 A 에게 wait 로 보내면, A 는 그 턴이 안 끝나서 둘 다 시간 끝까지 멈춤)"""
+        seen, todo = set(), [name]
+        while todo:
+            cur = todo.pop()
+            if cur == me["name"]:
+                raise ToolError(f"교착: {name} 이(가) 이미 너({me['name']})의 응답을 기다리는 중. "
+                                "wait=false 로 보내거나, 지금 턴을 끝내서 답을 돌려줘")
+            if cur not in seen:
+                seen.add(cur)
+                todo.extend(self._waits.get(cur, ()))
+        self._waits.setdefault(me["name"], []).append(name)
+        try:
+            yield
+        finally:
+            self._waits[me["name"]].remove(name)
+            if not self._waits[me["name"]]:
+                del self._waits[me["name"]]
+
     async def session_new(self, name: str, prompt: str | None = None, role: str = "worker", cwd: str | None = None,
                           backend: str | None = None, wait: bool = False, timeout_s: int = DEFAULT_WAIT_S,
                           attachments: list[str] | None = None, ctx: Context = None) -> str:
@@ -263,32 +301,38 @@ class CardinalMcp:
     async def session_send(self, name: str, text: str, wait: bool = True, timeout_s: int = DEFAULT_WAIT_S,
                            now: bool = False, attachments: list[str] | None = None, ctx: Context = None) -> str:
         me = self._caller(ctx)
-        self._not_self(me, name, "보내기")
+        self._callable(me, name, "보내기")
         try:
-            res = await self.sessions.send(name, text, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S), now=now,
-                                           attachments=self._drive_paths(me, attachments))
+            with self._waiting(me, name) if wait else contextlib.nullcontext():
+                res = await self.sessions.send(name, text, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S), now=now,
+                                               attachments=self._drive_paths(me, attachments))
+        except ToolError:
+            raise
         except Exception as e:
             raise ToolError(f"실패: {e}")
         return _json(res)
 
     async def session_wait(self, name: str, timeout_s: int = DEFAULT_WAIT_S, ctx: Context = None) -> str:
         me = self._caller(ctx)
-        self._not_self(me, name, "기다리기")
+        self._callable(me, name, "기다리기")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + min(timeout_s, MAX_WAIT_S)
-        while True:
-            try:
-                rep = await self.sessions.report(name)
-            except Exception as e:
-                raise ToolError(f"실패: {e}")
-            if rep.get("phase") not in ("working", "starting") or rep.get("pending"):
-                return _json(rep)
-            if loop.time() >= deadline:
-                return _json({**rep, "timedOut": True})
-            await asyncio.sleep(1.5)
+        with self._waiting(me, name):
+            while True:
+                try:
+                    rep = await self.sessions.report(name)
+                except Exception as e:
+                    raise ToolError(f"실패: {e}")
+                if rep.get("phase") not in ("working", "starting") or rep.get("pending"):
+                    return _json(rep)
+                if loop.time() >= deadline:
+                    return _json({**rep, "timedOut": True})
+                await asyncio.sleep(1.5)
 
     async def session_report(self, name: str, ctx: Context = None) -> str:
-        self._caller(ctx)
+        me = self._caller(ctx)
+        if me["role"] != "master":
+            self._callable(me, name, "결과 보기")
         try:
             return _json(await self.sessions.report(name))
         except Exception as e:

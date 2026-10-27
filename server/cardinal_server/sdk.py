@@ -61,6 +61,12 @@ COMMON_PROMPT = """
 `mcp__cardinal__drive_upload` 로 올리고, 드라이브 파일은 `drive_list` 로 보고 `drive_load` 로 작업 폴더에 가져온다.
 글 파일은 `drive_read` / `drive_write` 로 바로 읽고 쓰고, `drive_move` / `drive_delete` 로 정리한다.
 사람이 붙인 첨부는 지시 끝에 드라이브 경로와 로컬 경로로 안내된다.
+다른 세션의 드라이브 폴더(/sessions/<그 이름>)도 읽고 쓸 수 있다 (결과를 주고받을 때).
+"""
+
+WORKER_PROMPT = """
+너는 워커다. 새 세션을 만들 수는 없다. 다른 워커의 도움이 필요하면 `session_list` 로 이미 있는 워커를 보고
+`session_send` (wait=true 면 응답까지) / `session_wait` / `session_report` 로 맡기고 결과를 받아라. 마스터는 부를 수 없다.
 """
 
 MASTER_PROMPT = """
@@ -255,7 +261,7 @@ class SdkSession:
 
     def _build_options(self, resume: str | None, fresh_id: str | None) -> ClaudeAgentOptions:
         o = self.options
-        prompt = COMMON_PROMPT.format(name=self.name, role=self.role) + (MASTER_PROMPT if self.role == "master" else "")
+        prompt = COMMON_PROMPT.format(name=self.name, role=self.role) + (MASTER_PROMPT if self.role == "master" else WORKER_PROMPT)
         if o.get("append_prompt"):
             prompt += "\n" + o["append_prompt"]
         mcp: dict[str, Any] = dict(o.get("mcp_servers") or {})

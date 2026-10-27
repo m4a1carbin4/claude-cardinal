@@ -81,6 +81,12 @@ const MCP_COMMON_PROMPT = (name: string, role: Role) => `
 \`mcp__cardinal__drive_upload\` 로 올리고, 드라이브 파일은 \`drive_list\` 로 보고 \`drive_load\` 로 작업 폴더에 가져온다.
 글 파일은 \`drive_read\` / \`drive_write\` 로 바로 읽고 쓰고, \`drive_move\` / \`drive_delete\` 로 정리한다.
 사람이 붙인 첨부는 지시 끝에 드라이브 경로와 로컬 경로로 안내된다.
+다른 세션의 드라이브 폴더(/sessions/<그 이름>)도 읽고 쓸 수 있다 (결과를 주고받을 때).
+`;
+
+const MCP_WORKER_PROMPT = `
+너는 워커다. 새 세션을 만들 수는 없다. 다른 워커의 도움이 필요하면 \`session_list\` 로 이미 있는 워커를 보고
+\`session_send\` (wait=true 면 응답까지) / \`session_wait\` / \`session_report\` 로 맡기고 결과를 받아라. 마스터는 부를 수 없다.
 `;
 
 const MCP_MASTER_PROMPT = `
@@ -236,7 +242,7 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
   const claudeArgs = opts.claudeArgs ?? [];
   const mcp = opts.noMcp ? undefined : await mcpAttach(instanceId, role);
   const systemPrompt = mcp
-    ? MCP_COMMON_PROMPT(name, role) + (role === 'master' ? MCP_MASTER_PROMPT : '')
+    ? MCP_COMMON_PROMPT(name, role) + (role === 'master' ? MCP_MASTER_PROMPT : MCP_WORKER_PROMPT)
     : COMMON_PROMPT(name, role) + (role === 'master' ? MASTER_PROMPT : '');
   const argv = [
     'claude',

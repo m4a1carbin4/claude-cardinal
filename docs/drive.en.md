@@ -110,5 +110,6 @@ On a scratch server (7889, `--sdk`) with haiku sessions:
 ## Notes
 
 - The human REST API is guarded only by the server token (`CARDINAL_TOKEN`). The drive is a space shared by one person (or one team), so permissions aren't split per session: any session reads and writes the whole drive.
+- **Workers read and write each other's folders** (on purpose): checked w1 writing into w2's folder with `drive_write("/sessions/w2/x.txt")`, w2 reading it with `drive_read("x.txt")` and moving it back to w1's folder with `drive_move`. The prompts and MCP instructions say so too ("other sessions' folders /sessions/<name> are readable and writable"). This is where workers swap result files when they hand work to each other ([Cardinal MCP](mcp.en.md) worker rules).
 - Channel (Discord etc.) attachments are still saved to `~/.cardinal/inbox/<event>` as before (they don't go to the drive).
 - Text editing is capped at 2MB. Use download/upload for bigger files.

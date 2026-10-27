@@ -16,7 +16,7 @@
 지금은:
 
 - 도구는 서버의 `server/cardinal_server/mcp_server.py` 한 곳. 두 백엔드가 같은 도구를 씀
-- 역할별 도구 목록을 서버가 정함: 워커는 마스터 도구가 아예 안 보임
+- 역할별 도구 목록을 서버가 정함: 워커는 마스터 전용 도구(만들기·정리·화면·키·질문 답)가 아예 안 보임
 - 부른 세션은 요청마다 키로 확인 (환경변수 아님)
 - 사용법은 도구 설명에 있어서 프롬프트가 짧아짐
 
@@ -25,8 +25,8 @@
 ```
                     cardinal-server (FastAPI)
                      └ /mcp  ── CardinalMcp.app
-                          ├ /mcp/worker  → MCPServer "cardinal" (reply, session_list)
-                          └ /mcp/master  → MCPServer "cardinal" (위 + 세션 제어 8개)
+                          ├ /mcp/worker  → MCPServer "cardinal" (reply, session_list, session_send/wait/report → 있는 워커만, drive_*)
+                          └ /mcp/master  → MCPServer "cardinal" (위 + session_new/kill/screen/keys/answer, 누구든 부름)
                                ▲ X-Cardinal-Instance / X-Cardinal-Key 확인 (401 / 403)
               ┌────────────────┴────────────────┐
    tmux claude (CLI 가 띄움)               SDK 세션 (서버 안)
@@ -48,15 +48,17 @@
 | `drive_list` `drive_read` `drive_write` `drive_move` `drive_delete` | ✓ | ✓ | 웹드라이브 파일 다루기 (목록, 글 읽기/쓰기, 옮기기, 지우기). 경로를 `/` 없이 쓰면 내 세션 폴더 기준 → [웹드라이브](drive.md) |
 | `drive_upload(src, path?, keep_source?)` / `drive_load(path, dest?)` | ✓ | ✓ | 로컬 → 드라이브로 옮기기 / 드라이브 → 로컬로 복사 |
 | `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?, attachments?)` | | ✓ | 워커 만들기. cwd·backend 기본은 부른 세션과 같게. 부모 기록 |
-| `session_send(name, text, wait=true, timeout_s?, now?, attachments?)` | | ✓ | 지시 보내기 (작업 중이면 끝난 뒤 차례로). `attachments`: 넘길 드라이브 파일 |
-| `session_wait(name, timeout_s?)` | | ✓ | 지금 일이 끝날 때까지 기다리고 결과 보고. 질문/권한 대기에 걸리면 바로 |
-| `session_report(name)` | | ✓ | 살아있나, 작업중/완료/중단, 마지막 사람 턴 전체, 답 기다리는 질문(SDK) |
+| `session_send(name, text, wait=true, timeout_s?, now?, attachments?)` | ✓* | ✓ | 지시 보내기 (작업 중이면 끝난 뒤 차례로). `attachments`: 넘길 드라이브 파일 |
+| `session_wait(name, timeout_s?)` | ✓* | ✓ | 지금 일이 끝날 때까지 기다리고 결과 보고. 질문/권한 대기에 걸리면 바로 |
+| `session_report(name)` | ✓* | ✓ | 살아있나, 작업중/완료/중단, 마지막 사람 턴 전체, 답 기다리는 질문(SDK) |
 | `session_kill(name, purge?)` | | ✓ | 끝내기 |
 | `session_screen(name, lines?)` | | ✓ | tmux 세션 화면 (승인 다이얼로그 확인) |
 | `session_keys(name, keys[])` | | ✓ | tmux 세션에 키 (다이얼로그 처리) |
 | `session_answer(name, pending_id, answers?, allow?, message?)` | | ✓ | SDK 세션의 질문/권한에 답 |
 
 - 자기 자신에게 send/wait/kill/keys는 막음.
+- **워커 규칙 (✓\*)**: 워커는 새 세션을 못 만듦(`session_new` 없음). 대신 **이미 있는 워커**에게 `session_send`/`session_wait`/`session_report`로 일을 맡기고 결과를 받을 수 있음. 상대가 마스터거나 없는 세션이면 거부 (`워커는 마스터를 부를 수 없음`, `모르는 세션 … 워커는 새 세션을 못 만듦`). 마스터는 워커·마스터 누구든 부름.
+- **교착 막기**: 누가 누구의 응답을 기다리는지(`session_send wait=true`, `session_wait`) 서버가 기억하고, 기다림이 돌고 돌아 자기에게 오면 거부함. 예: w1이 w2를 wait로 부른 턴 안에서 w2가 w1에게 wait로 보내면, w1은 그 턴이 안 끝나서 둘 다 시간 끝까지 멈춤 → `교착: w1 이(가) 이미 너(w2)의 응답을 기다리는 중…`. `wait=false`는 안 막음.
 - 기다리는 도구(`session_send wait`, `session_wait`, `session_new wait`)는 최대 3600초. 세션 쪽 MCP 타임아웃은 `MCP_TOOL_TIMEOUT=3700000`(ms)으로 넉넉히 줌 (tmux는 env, SDK는 `env`).
 - 도구는 다 서버의 `Sessions`(백엔드 고르기)를 부름. 그래서 tmux 마스터가 SDK 워커를, SDK 마스터가 tmux 워커를 만들어도 됨.
 
@@ -95,6 +97,7 @@
 MCP 세션의 프롬프트 (tmux는 `src/session.ts` `MCP_*_PROMPT`, SDK는 `sdk.py` — 같은 내용):
 
 - 공통: "카디널은 `mcp__cardinal__*`로만 다룬다. CLI는 사람용이니 Bash로 부르지 마라", `[cardinal:event <ID>]`는 외부 이벤트고 답은 `mcp__cardinal__reply`로만 전달됨
+- 워커: 새 세션은 못 만들고, 있는 워커에게 `session_send`/`session_wait`/`session_report`로 맡김 (마스터는 못 부름). 다른 세션 드라이브 폴더도 읽고 씀
 - 마스터: 내장 서브 에이전트 대신 `session_new`로 워커, `session_send`/`session_wait`/`session_report`, 막히면 `session_screen`+`session_keys`(tmux) / `session_answer`(SDK), `session_kill`
 
 채널 전달 메시지 끝의 답장 안내도 세션에 맞춰 나감: `sessions.mcp`가 켜진 세션(SDK는 항상)은 `mcp__cardinal__reply`, 아니면 `cardinal reply …`.
