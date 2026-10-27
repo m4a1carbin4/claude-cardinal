@@ -204,7 +204,8 @@ class Ingestor:
                 self._tail_events(sid, hdir / "events.jsonl")
 
             # 폴더가 사라진 세션 (purge 또는 같은 이름으로 새로 만듦) → 기록은 남기고 삭제 표시
-            for sid in self.db.live_session_ids():
+            # sdk 세션은 파일이 없으니 여기서 안 건드림 (SdkManager 가 관리)
+            for sid in self.db.live_session_ids(backend="tmux"):
                 if sid not in seen:
                     self.db.mark_deleted(sid)
 

@@ -6,9 +6,9 @@ import re
 import secrets
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from .channel.base import Adapter, InboundMessage, OutboundFile
-from .cli import Cli, CliError
 from .config import Settings
 from .db import DB, now
 
@@ -62,6 +62,7 @@ def _safe_name(name: str) -> str:
 
 
 def format_delivery(ev: dict, route: dict, body: str, cli_path: Path) -> str:
+    sdk = route.get("session_backend") == "sdk"
     where = f"{ev['platform']} #{clean(ev.get('channel_name') or ev.get('channel_id')) or '?'}"
     if ev.get("guild"):
         where += f" ({clean(ev['guild'])})"
@@ -80,15 +81,18 @@ def format_delivery(ev: dict, route: dict, body: str, cli_path: Path) -> str:
             lines.append(f"- {clean(a.get('local_path') or a.get('url'))} ({info})" + (f" 저장 실패: {a['error']}" if a.get("error") else ""))
     if route.get("auto_reply"):
         lines.append("이 이벤트는 턴이 끝나면 마지막 응답이 자동으로 답장됨. 따로 보내고 싶으면 아래 도구 사용.")
-    lines.append(f"답장: {cli_path} reply {ev['id']} \"<답장>\" [--file <경로>]")
+    if sdk:
+        lines.append(f"답장: mcp__cardinal__reply 도구 (event_id={ev['id']}, text, files)")
+    else:
+        lines.append(f"답장: {cli_path} reply {ev['id']} \"<답장>\" [--file <경로>]")
     return "\n".join(lines)
 
 
 class Router:
-    def __init__(self, settings: Settings, db: DB, cli: Cli, publish: Callable[[dict], Awaitable[None]]):
+    def __init__(self, settings: Settings, db: DB, sessions: Any, publish: Callable[[dict], Awaitable[None]]):
         self.settings = settings
         self.db = db
-        self.cli = cli
+        self.sessions = sessions  # sessions.Sessions: 백엔드(tmux/sdk)에 맞춰 보냄
         self.publish = publish  # /ws/channel 로 알림
         self.adapters: dict[str, Adapter] = {}
         self._tasks: set[asyncio.Task] = set()
@@ -171,7 +175,7 @@ class Router:
         async with self._session_locks.setdefault(sid, asyncio.Lock()):
             try:
                 if route.get("auto_reply"):
-                    res = await self.cli.send(name, text, wait=True, timeout_s=AUTO_REPLY_TIMEOUT_S) or {}
+                    res = await self.sessions.send(name, text, wait=True, timeout_s=AUTO_REPLY_TIMEOUT_S) or {}
                     if not res.get("accepted"):
                         status, error = "failed", "claude가 받았다는 신호 없음"
                     elif res.get("interrupted"):
@@ -188,7 +192,7 @@ class Router:
                     if status == "sent" and not skip and last and not self.db.has_reply(ev["id"]):
                         await self.reply(ev["id"], name, last, [], source="auto")
                 else:
-                    res = await self.cli.send(name, text)
+                    res = await self.sessions.send(name, text)
                     if not (res or {}).get("accepted"):
                         status, error = "failed", "claude가 받았다는 신호 없음"
                     self.db.finish_delivery(did, status, error)

@@ -71,6 +71,8 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [x] 세션별 `send` 직렬화 (세션 락 + idle 대기 → 메시지 하나 = 턴 하나)
 - [x] 상태 판정 보강 (Esc 중단 = 사람 개입, 백그라운드 알림 턴 구분, 사람 입력만 턴으로 보기)
 - [x] 서버 시작 전 중복 실행/포트 확인
+- [x] SDK 모드: tmux 없이 서버 안 Claude Agent SDK 세션 (생성/재시작/중단, 질문 답하기, MCP, 실시간 웹소켓, 같은 채널)
+- [ ] SDK 모드 웹 UI
 - [ ] 디스코드 실제 봇으로 돌려보기
 - [ ] 카디널 캐릭터성
 
@@ -151,3 +153,13 @@ pnpm dev                               # 개발: http://localhost:5173, /api·/w
 
 세션 목록(실시간) · 새 세션(작업 폴더, 신뢰 자동 수락, 라우트) · 세션별 터미널 / 메시지·키 보내기 / 결과 / 훅 이벤트 / 라우트 · 채널 이벤트→전달→답장 흐름과 local 메시지 넣기 · 디스코드 연결 상태.
 주소 해시로 화면을 고를 수 있음: `/#s=<세션 이름>`, `/#channel`. 자세한 건 [docs/web-ui.md](docs/web-ui.md).
+
+### SDK 모드 (tmux 없이)
+
+```sh
+cd server && uv run cardinal-server --sdk    # 또는 ./launch.sh --sdk
+```
+
+세션을 tmux + TUI 대신 **서버 안 Claude Agent SDK**로 돌림. 음성/모션 같은 프로그램이 붙기 좋게 REST + `/ws/sdk/<이름>` 실시간 웹소켓으로만 다룸 (CLI 없음).
+생성·재시작(대화 이어서)·중단, 질문(AskUserQuestion)에 API로 답하기, 외부 MCP 서버 연결/상태, 모델·권한 모드 바꾸기, 토큰 스트리밍. 기본 권한 모드는 auto.
+채널(디스코드, local)·라우트·자동 답장은 tmux 세션과 같은 걸 씀. 답장은 `mcp__cardinal__reply` 도구. 자세한 건 [docs/sdk-mode.md](docs/sdk-mode.md).

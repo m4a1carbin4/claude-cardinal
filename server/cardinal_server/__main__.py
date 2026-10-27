@@ -10,11 +10,15 @@ def main() -> None:
     p = argparse.ArgumentParser(prog="cardinal-server", description="카디널 서버")
     p.add_argument("--host", help="기본 127.0.0.1 (CARDINAL_HOST)")
     p.add_argument("--port", type=int, help="기본 7878 (CARDINAL_PORT)")
+    p.add_argument("--sdk", action="store_true",
+                   help="SDK 모드: 세션을 서버 안의 Claude Agent SDK 로 돌림 (tmux 없이). 새 세션 기본 백엔드가 sdk (CARDINAL_SDK=1)")
     a = p.parse_args()
     if a.host:
         os.environ["CARDINAL_HOST"] = a.host
     if a.port:
         os.environ["CARDINAL_PORT"] = str(a.port)
+    if a.sdk:
+        os.environ["CARDINAL_SDK"] = "1"
 
     from .app import create_app
     from .config import load

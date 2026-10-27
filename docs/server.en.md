@@ -1,6 +1,6 @@
 # Cardinal server (Python / FastAPI)
 
-[한국어](server.md) · Related: [session system](session-system.en.md), [web terminal](web-terminal.en.md)
+[한국어](server.md) · Related: [session system](session-system.en.md), [web terminal](web-terminal.en.md), [SDK mode](sdk-mode.en.md) (SDK sessions inside the server, no tmux)
 
 The server that used to live inside the CLI (`cardinal serve`) is now a separate Python service in `server/`, so a message channel and a database can be attached.
 This document follows "where a single request goes, in what order", with code locations and real records.

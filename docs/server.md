@@ -1,6 +1,6 @@
 # 카디널 서버 (Python / FastAPI)
 
-[English](server.en.md) · 관련: [세션 시스템](session-system.md), [웹 터미널](web-terminal.md)
+[English](server.en.md) · 관련: [세션 시스템](session-system.md), [웹 터미널](web-terminal.md), [SDK 모드](sdk-mode.md) (tmux 없이 서버 안 SDK 세션)
 
 CLI 안에 있던 서버(`cardinal serve`)를 `server/`의 Python 서비스로 분리함. 메시지 채널이랑 DB를 붙이려고.
 이 문서는 "요청 하나가 들어와서 어디를 어떤 순서로 지나가는지"를 코드 위치랑 실제 기록으로 따라감.

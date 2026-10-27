@@ -10,6 +10,7 @@ dependencies = [
     "discord.py>=2.4",
     "ptyprocess>=0.7",
     "watchfiles>=0.24",
+    "claude-agent-sdk>=0.2.170",
 ]
 
 [project.scripts]

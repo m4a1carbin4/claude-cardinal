@@ -16,6 +16,7 @@ WEB_PORT=5173
 SERVER_PORT="${CARDINAL_PORT:-7878}"
 MODE=preview
 REBUILD=0
+SERVER_ARGS=()
 
 usage() {
   cat <<EOF
@@ -26,6 +27,7 @@ usage() {
       --server-port PORT 내부 카디널 서버 포트 (기본 7878 또는 CARDINAL_PORT). 서버는 항상 127.0.0.1
       --dev              웹 UI 를 개발 모드(vite dev)로
       --rebuild          CLI 와 웹 UI 를 다시 빌드하고 시작
+      --sdk              서버를 SDK 모드로 (세션을 tmux 대신 서버 안 Claude Agent SDK 로, docs/sdk-mode.md)
   -h, --help             이 도움말
 
 환경변수: CARDINAL_HOME, CARDINAL_TOKEN, DISCORD_TOKEN 등은 서버에 그대로 넘어감.
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --server-port=*) SERVER_PORT="${1#*=}"; shift ;;
     --dev) MODE=dev; shift ;;
     --rebuild) REBUILD=1; shift ;;
+    --sdk) SERVER_ARGS+=(--sdk); shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "launch.sh: 모르는 옵션 $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -108,11 +111,14 @@ trap 'exit 143' TERM
 
 if up; then
   echo "▸ 이미 떠 있는 카디널 서버 사용: $SERVER_URL (끝날 때 안 끔)"
+  if (( ${#SERVER_ARGS[@]} )) && ! curl -s -m 2 "$SERVER_URL/api/health" | grep -q '"enabled":true'; then
+    echo "⚠ 떠 있는 서버는 SDK 모드가 아님 (--sdk 는 서버를 새로 띄울 때만 적용). 그 서버를 끄고 다시 실행하세요."
+  fi
 else
   echo "▸ 카디널 서버 시작: $SERVER_URL"
   # uv run 을 거치면 pid 가 uv 라서, 의존성만 맞추고 서버를 직접 띄움 (종료 신호가 서버에 바로 가게)
   (cd "$ROOT/server" && uv sync -q)
-  "$ROOT/server/.venv/bin/cardinal-server" --host 127.0.0.1 --port "$SERVER_PORT" &
+  "$ROOT/server/.venv/bin/cardinal-server" --host 127.0.0.1 --port "$SERVER_PORT" ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"} &
   SERVER_PID=$!
   for _ in $(seq 1 60); do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
