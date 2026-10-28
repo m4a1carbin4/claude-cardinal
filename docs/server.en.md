@@ -1,6 +1,6 @@
 # Cardinal server (Python / FastAPI)
 
-[한국어](server.md) · Related: [session system](session-system.en.md), [web terminal](web-terminal.en.md)
+[한국어](server.md) · Related: [session system](session-system.en.md), [web terminal](web-terminal.en.md), [SDK mode](sdk-mode.en.md) (SDK sessions inside the server, no tmux), [Cardinal MCP](mcp.en.md) (how models in sessions drive Cardinal)
 
 The server that used to live inside the CLI (`cardinal serve`) is now a separate Python service in `server/`, so a message channel and a database can be attached.
 This document follows "where a single request goes, in what order", with code locations and real records.
@@ -40,6 +40,8 @@ Contents
  │                                                                                                       │
  │  POST /api/events/<id>/reply ──▶ router.reply ──▶ adapter.send_reply ──▶ DB: replies                  │◀── cardinal reply
  │                                                                                                       │    (agent in a session)
+ │  /mcp/worker|master (Cardinal MCP) ──▶ sessions.* / router.reply                                      │◀── mcp__cardinal__*  (model in a session; the default when the server runs)
+ │                                                                                                       │
  │  ingest.Ingestor ── watches ~/.cardinal/sessions ──▶ DB: sessions / session_events ──▶ /ws/events     │◀── hooks write files
  │                                                                                                       │
  │  terminal.bridge ── /ws/term/<name> ── `tmux attach` inside a pty                                      │
@@ -47,9 +49,10 @@ Contents
  └───────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Three rules:
+Four rules:
 
 - **Session control logic lives only in the CLI.** The server just runs `cardinal ... --json` as a subprocess (`server/cardinal_server/cli.py`). tmux handling, hook injection and transcript parsing all stay on the TS side. The CLI works fully without the server.
+- **Models in sessions use the Cardinal MCP only.** With the server running, tmux and SDK sessions alike drive Cardinal through the `mcp__cardinal__*` tools on `/mcp/worker|master` (the CLI is for humans). The tools call the server's `Sessions` (→ CLI or SDK) in turn. See [Cardinal MCP](mcp.en.md).
 - **For session records, files are the source and the DB is the collection.** The CLI writes `~/.cardinal/sessions/<name>/meta.json`; each hook writes only to its own dir `~/.cardinal/hooks/<instanceId>/`. The server only reads and collects into SQLite. Nothing is lost while the server is down; it catches up on start.
 - **For channel records, the DB is the source.** Channel events, deliveries and replies are known only to the server, so they're written to the DB directly.
 
@@ -80,7 +83,7 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # with the Discord channel
 
 ## 3. Server startup sequence
 
-`create_app()` in `app.py` builds the objects; `lifespan()` (`app.py:161`) starts and stops them.
+`create_app()` in `app.py` builds the objects; `lifespan()` (`app.py:262`) starts and stops them.
 
 ```
 Pre-start check (`__main__.py` → `running.py` `precheck`)
@@ -104,9 +107,14 @@ lifespan start
  4. if DISCORD_TOKEN: create DiscordAdapter, start → client.start(token) task (gateway login)
  5. write ~/.cardinal/server.json {url, token, pid}, mode 600
     (right before writing, check again whether another server came up → if so, fail startup without overwriting)
-    → `cardinal reply` inside sessions reads this to find the server
- ── serving ──
-lifespan end
+    → `cardinal reply` inside sessions and CLI `new` (whether to attach the Cardinal MCP) read this to find the server
+    (sdk_mgr.startup and the Cardinal MCP session managers also start here; `~/.cardinal/mcp.key` is created if missing)
+ ── serving ── (in the background once requests are accepted)
+    · restart resume_on_start SDK sessions (now, because they must connect to the Cardinal MCP)
+    · `cardinal mcp-reconnect` for each live tmux MCP session (claude doesn't reattach a dropped MCP by itself)
+    · `cardinal revive --all` for sessions whose tmux is gone (reboot etc.): same session + same claude conversation, skipping ones ended with kill
+      (off with `CARDINAL_TMUX_REVIVE=0`, [session system](session-system.en.md#revive))
+lifespan end (open requests get at most 5s: timeout_graceful_shutdown)
  6. delete server.json if its pid is ours (don't delete if another server overwrote it)
  7. cancel the ingest task, close the Discord connection
 ```
@@ -125,7 +133,7 @@ POST /api/sessions
 ```
 
 ```
-client              app.create_session (app.py:250)       cardinal CLI (TS)                  tmux / claude
+client              app.create_session (app.py:387)       cardinal CLI (TS)                  tmux / claude
     │ POST ───────────▶│
     │                  │ validate pydantic SessionIn
     │                  │  (role ∈ worker|master, match ∈ prefix|contains|regex|mention …)
@@ -141,12 +149,12 @@ client              app.create_session (app.py:250)       cardinal CLI (TS)     
 
 Step by step:
 
-1. **Validation** (`SessionIn` at `app.py:105`, `RouteIn` at `:97`): unknown `match` or `role` values are rejected here with 422.
-2. **CLI call** (`Cli.new`, `cli.py:50`): `cardinal new <name> --role <role> [--prompt …] [--cwd …] [--trust] --json [-- claude args]`.
+1. **Validation** (`SessionIn` at `app.py:157`, `RouteIn` at `:101`): unknown `match` or `role` values are rejected here with 422.
+2. **CLI call** (`Cli.new`, `cli.py:51`): `cardinal new <name> --role <role> [--prompt …] [--cwd …] [--trust] --json [-- claude args]`.
    - Run with `asyncio.create_subprocess_exec` (no shell). `CARDINAL_SESSION`/`CARDINAL_INSTANCE`/`CARDINAL_ROLE` are removed from the environment (API-created sessions have no parent). A non-zero exit turns the stderr `cardinal: …` message into a `CliError` → HTTP 400.
-   - What the CLI does is as in [session system](session-system.en.md#creating-a-session): working dir (fixed workspace unless `cwd` is given), pre-assigned `--session-id`, hooks via `--settings`, role prompt (including "reply to external events with `cardinal reply`").
+   - What the CLI does is as in [session system](session-system.en.md#creating-a-session): working dir (fixed workspace unless `cwd` is given), pre-assigned `--session-id`, hooks via `--settings`, role prompt. The server passes `CARDINAL_SERVER_URL` to the CLI, so the CLI attaches the Cardinal MCP and uses the MCP prompt (external events are answered via `mcp__cardinal__reply`). From a master tool it also passes `CARDINAL_PARENT_NAME/ID`.
 3. **Immediate sync** (`ingestor.sync()`): doesn't wait for the file watcher, so the response can carry the DB row.
-4. **Save routes** (`add_route`, `db.py:241`): `routes.session_id` = session identity (instanceId). Because routes attach to the identity, not the name, a new session with the same name does not inherit old routes.
+4. **Save routes** (`add_route`, `db.py:327`): `routes.session_id` = session identity (instanceId). Because routes attach to the identity, not the name, a new session with the same name does not inherit old routes.
 5. **Response**: the `sessions` row plus a `routes` array. State is usually `starting` at this point (claude hasn't fired `SessionStart` yet).
 
 Actual response (from testing):
@@ -164,7 +172,7 @@ About 4 seconds later claude fires `SessionStart` → state.json becomes `idle` 
 `ingest.py`. Hooks only write files and never talk to the server, so hooks don't fail when the server is down.
 
 ```
-claude hook (dist/hook.js <hook dir>)        ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:237)
+claude hook (dist/hook.js <hook dir>)        ~/.cardinal/hooks/<instanceId>/          Ingestor.run (ingest.py:238)
    │ overwrite state.json (tmp → rename) ────▶│ state.json                          │
    │ append a line to events.jsonl ──────────▶│ events.jsonl                         │
                                               │── watchfiles change (150ms debounce) ─▶│ _kick.set()
@@ -182,13 +190,13 @@ claude hook (dist/hook.js <hook dir>)        ~/.cardinal/hooks/<instanceId>/    
 `sync()` (`ingest.py:186`) in detail:
 
 1. **tmux liveness** (`_tmux_sessions`): one `tmux list-sessions -F '#{session_name}'`. If there's no tmux server at all, it fails → empty set.
-2. **Session upsert** (`db.py:154`): keyed by `meta.instanceId` (old sessions: `meta.claudeSessionId`). Only the hook dir that meta points to is read. The current claude session ID (`claudeSessionId` in `state.json`, changes on `/clear`) goes into the `claude_session_id` column.
+2. **Session upsert** (`db.py:177`): keyed by `meta.instanceId` (old sessions: `meta.claudeSessionId`). Only the hook dir that meta points to is read. The current claude session ID (`claudeSessionId` in `state.json`, changes on `/clear`) goes into the `claude_session_id` column.
    - Not in tmux → `state='ended'`, `alive=0`, regardless of state.json.
    - `ON CONFLICT DO UPDATE` refreshes only the state columns and resets `deleted_at=NULL`.
 3. **Event catch-up** (`_tail_events`, `ingest.py:157`):
    - Look up how many bytes of this session were already read in `ingest_offsets`.
    - If the file is larger, read only the rest, and process **only up to the last `\n`** (a half-written line waits for the next round).
-   - Parse each line into `session_events` and commit the new offset in **the same transaction** (`db.py:217`), so a crash causes neither duplicates nor gaps.
+   - Parse each line into `session_events` and commit the new offset in **the same transaction** (`db.py:273`), so a crash causes neither duplicates nor gaps.
    - Esc interrupt correction (DB only, files untouched): the transcript's interrupt marker, and for interrupts before any reply, a `busy` state older than 3s whose bottom screen lines lack `esc to interrupt` on two consecutive checks (≥0.8s apart) → `idle`/`Interrupted`. So the web UI reflects it even if nobody runs the CLI (measured: 4s). Same rules as [session system](session-system.en.md#esc-interrupt--human-intervention).
 4. **Deletion detection**: a session live in the DB with no folder gets `deleted_at`. Happens after `kill --purge` or when a name is re-created (the CLI deletes the old folder and writes a new one). The row itself is kept.
 5. **Change notification**: serialize all `sessions` to JSON, compare with the previous one, and on difference call `on_change()` → push on `/ws/events`.
@@ -206,8 +214,8 @@ Actual offsets after testing: `helper` read up to 3668 bytes, `auto` up to 733 b
 | Entry | Code | Produces |
 | --- | --- | --- |
 | Discord message | `on_message`, `discord_adapter.py:41` | `InboundMessage(platform="discord", …)` |
-| `POST /api/channel/inbound` | `app.py:334` | `InboundMessage(platform="local", …)` |
-| `{"type":"message",…}` on `/ws/channel` | `app.py:402` | `InboundMessage(platform="local", …)`, attachments as base64 |
+| `POST /api/channel/inbound` | `app.py:565` | `InboundMessage(platform="local", …)` |
+| `{"type":"message",…}` on `/ws/channel` | `app.py:707` | `InboundMessage(platform="local", …)`, attachments as base64 |
 
 What the Discord adapter fills in:
 
@@ -223,7 +231,7 @@ What the Discord adapter fills in:
 
 **All bot messages are ignored** (including its own). Otherwise a reply containing the trigger would loop forever.
 
-### 6-2. `router.handle` (`router.py:129`)
+### 6-2. `router.handle` (`router.py:134`)
 
 ```
 InboundMessage
@@ -258,14 +266,14 @@ Checked in order; any miss rejects the route:
 
 Matching is case-sensitive.
 
-### 6-4. Saving attachments (`router.py:108`)
+### 6-4. Saving attachments (`router.py:113`)
 
 - Files over 25MB are skipped and marked with `error`.
 - Discord files are fetched with `attachment.read()`; local ones use the bytes already received.
 - Filenames are sanitized (`[^\w.\-]` → `_`) to prevent path escapes.
 - One failure doesn't stop delivery; failed files show up as `저장 실패: …` in the session message.
 
-### 6-5. Delivery to the session (`_deliver`, `router.py:161`)
+### 6-5. Delivery to the session (`_deliver`, `router.py:166`)
 
 1. **State check**: delivery starts if the session state is `idle`/`busy`/`starting`. If `waiting` (approval), nothing is sent and `deliveries` gets `failed` (`세션 상태 waiting`).
    - `busy`/`starting`: the CLI waits until idle before sending (mid-turn input gets injected into the running turn; input into a dialog goes to the dialog). Events arriving right after a session is created now wait and go in this way; previously `starting` failed immediately.
@@ -283,13 +291,15 @@ Matching is case-sensitive.
    답장: <repo>/bin/cardinal reply evt_71363e3e "<답장>" [--file <경로>]
    ```
 
+   The last line depends on the session. The one above is for a tmux session started without a server (CLI mode). Sessions on the Cardinal MCP (the default now; SDK always) get `답장: mcp__cardinal__reply 도구 (event_id=evt_…, text, files)`.
+
    Externally supplied values (body, author, channel/server names, attachment paths) have **control characters removed** except tab and newline (`clean`). tmux doesn't filter pasted content, so things like `ESC[201~` pass through. With real claude, Claude Code filtered it and no escape was reproduced, but this is defense in depth.
 
-   The leading `[cardinal:event <ID>]` is the agreed marker. The session system prompt says messages starting with it are external events and only `cardinal reply` reaches the channel.
+   The leading `[cardinal:event <ID>]` is the agreed marker. The session system prompt says messages starting with it are external events and only `mcp__cardinal__reply` (`cardinal reply` in CLI mode) reaches the channel.
 3. **Record `pending`**: insert a `pending` row in `deliveries` and push `{"type":"delivery", …, "status":"pending"}` on `/ws/channel`.
 4. **Session lock** (in the server): one `asyncio.Lock` per session. Deliveries to the same session go one at a time; with `auto_reply` the next event waits until the reply is done.
-5. **Send** (`Cli.send`, `cli.py:64`): `cardinal send <name> - --queue-timeout 600 --json`, with the text **on stdin** (as an argument, a body starting with `-` would be parsed as an option).
-   - Inside the CLI ([session system send](session-system.en.md#send)): session file lock → wait for idle if `busy` → refuse if `waiting` or on the trust dialog → (clear text an Esc interrupt restored into the input box) → paste → 200ms → `Enter` → confirm the hook state changed (received), retry `Enter` if not (up to 3 times, 3s each) (`src/session.ts:404-457`).
+5. **Send** (`Cli.send`, `cli.py:70`): `cardinal send <name> - --queue-timeout 600 --json`, with the text **on stdin** (as an argument, a body starting with `-` would be parsed as an option).
+   - Inside the CLI ([session system send](session-system.en.md#send)): session file lock → wait for idle if `busy` → refuse if `waiting` or on the trust dialog → (clear text an Esc interrupt restored into the input box) → paste → 200ms → `Enter` → confirm the hook state changed (received), retry `Enter` if not (up to 3 times, 3s each) (`src/session.ts:491-546`).
    - The server's subprocess timeout allows for the idle wait: `600 + 30`s.
 6. **Record the result**: update the same row to `sent` if claude received it (`accepted`), or `failed` with a reason otherwise / on CLI error.
 7. Push `{"type":"delivery", event_id, session, status}` on `/ws/channel`.
@@ -302,14 +312,16 @@ To claude, this text is **pasted input**. The prompt recorded by the `UserPrompt
 
 ## 7. Flow D: agent reply (`cardinal reply`)
 
+The default now is the Cardinal MCP: when a model calls `mcp__cardinal__reply(event_id, text, files)`, `/mcp/*` → `CardinalMcp.reply` (`mcp_server.py`) reads the files (relative to the working dir is fine) and hands off to the same `router.reply` as step 4 below; the rest is identical. The diagram below is the CLI path (humans, or sessions started without a server).
+
 ```
 claude in a session (Bash tool)     cardinal CLI (src/reply.ts)                 server                                Discord
    │ cardinal reply evt_… "…" --file a.png
    │────────────────────────────▶│ 1. validate text/files
    │                             │ 2. find the server
-   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:341)
+   │                             │ 3. multipart POST /api/events/evt_…/reply ──▶│ app.reply (app.py:572)
    │                             │                                             │  UploadFile → OutboundFile
-   │                             │                                             │ router.reply (router.py:203)
+   │                             │                                             │ router.reply (router.py:208)
    │                             │                                             │  look up event → pick adapter
    │                             │                                             │  adapter.send_reply ─────────────▶│ reply to original message
    │                             │                                             │  INSERT replies (sent/failed)
@@ -326,8 +338,8 @@ CLI side (`src/reply.ts`):
 
 Server side:
 
-4. **Endpoint** (`app.py:341`): reads the form fields and turns each `UploadFile` into `OutboundFile(filename, data, content_type)`. The server checks again: no text and no files → 400; more than 10 files or a file over 10MB → 413 (so calling the API directly, bypassing the CLI, is also limited).
-5. **`router.reply`** (`router.py:203`):
+4. **Endpoint** (`app.py:572`): reads the form fields and turns each `UploadFile` into `OutboundFile(filename, data, content_type)`. The server checks again: no text and no files → 400; more than 10 files or a file over 10MB → 413 (so calling the API directly, bypassing the CLI, is also limited).
+5. **`router.reply`** (`router.py:208`):
    - Look up the event in `channel_events`. Missing → `LookupError` → **404**.
    - Pick the adapter by the event's `platform`. Fails if that platform isn't connected (e.g. a Discord event after restarting without a token).
    - Resolve the session name to its ID for the record (the reply is sent even if it isn't found).
@@ -350,7 +362,7 @@ Real record: the command the agent ran (`toolInput` of the `PreToolUse` hook):
 
 ## 8. Flow E: automatic reply (`auto_reply`)
 
-With `auto_reply: true` on the route, `_deliver` takes a different path (`router.py:173`):
+With `auto_reply: true` on the route, `_deliver` takes a different path (`router.py:178`):
 
 ```
 _deliver (holding the session lock)
@@ -387,7 +399,7 @@ Real record (`auto` session, `contains "auto"`):
 
 ## 9. Flow F: web terminal / status push
 
-### Web terminal `/ws/term/<name>` (`app.py:365` → `terminal.py:17`)
+### Web terminal `/ws/term/<name>` (`app.py:596` → `terminal.py:17`)
 
 1. Check the token → find the session by name in the DB. Missing or `alive=0` → close with `4404`.
 2. Create a pty with `ptyprocess` and run `tmux attach-session -t =<tmux name>` in it (spectator mode adds `-r -f ignore-size`).
@@ -406,13 +418,14 @@ The mechanism (two ptys, xterm.js, control codes) is in [web-terminal.en.md](web
 
 `Hub.publish` sends to subscribers **concurrently**, and drops any subscriber that can't be sent to within 2s. One slow client no longer holds up other subscribers or the router awaiting publish. (Previously it awaited them in order, so one slow client delayed everything.)
 
-`/ws/events` pushes only when the session list actually changes; the ever-changing `updated_at` is excluded from the comparison (previously it pushed every 3s even with no change).
+`/ws/events` pushes only when the session list actually changes; the ever-changing `updated_at` is excluded from the comparison (previously it pushed every 3s even with no change). The pushed session rows redact `sdk_options` secrets like the REST list (previously the originals went out as is).
 
 ### Auth
 
-- HTTP: `Depends(auth)` on every route (`app.py:205`). `?token=` or `Authorization: Bearer`; otherwise 401.
-- WS: `ws_auth` (`app.py:209`) checks before accept and closes with `4401` on failure.
+- HTTP: `Depends(auth)` on every route (`app.py:319`). `?token=` or `Authorization: Bearer`; otherwise 401.
+- WS: `ws_auth` (`app.py:323`) checks before accept and closes with `4401` on failure.
 - Without `CARDINAL_TOKEN` everything passes (the default bind is 127.0.0.1).
+- `/mcp/*` doesn't use this token but a session key (`X-Cardinal-Instance` + HMAC `X-Cardinal-Key`): wrong → 401, a worker on `/mcp/master` → 403. See [Cardinal MCP](mcp.en.md#whos-calling).
 - `?token=xxx` in uvicorn logs (`uvicorn.access`, `uvicorn.error`) is masked as `token=***` (`_RedactToken` filter, attached at startup). The web page passes the token in the query, so it used to end up in logs.
 
 ---
@@ -459,13 +472,17 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 | `state`, `state_at`, `last_event`, `detail`, `tool`, `transcript_path` | from state.json; state is `ended` if tmux is gone |
 | `deleted_at` | when the record folder disappeared |
 | `updated_at` | last upsert |
+| `backend` | `tmux` (default) / `sdk`. The ingester leaves SDK sessions alone; `sdk.py` updates them directly ([SDK mode](sdk-mode.en.md)) |
+| `sdk_options` | SDK session options as JSON (stored as is; env/header values are `***` when sent out over the API or `/ws/events`) |
+| `mcp` | attached to the Cardinal MCP (SDK always; tmux from `mcp` in meta.json). Picks the reply hint in channel deliveries |
 
 "Find by name" (`session_by_name`) = newest `created_at` among rows with `deleted_at IS NULL`.
 
-### session_events / ingest_offsets
+### session_events / ingest_offsets / sdk_turns
 
 - `session_events`: `(session_id, at, event, tool, data)`. `data` is the raw events.jsonl line (prompt clipped to 2000 chars, tool input to 300, `promptId`, …).
 - `ingest_offsets`: `(session_id, offset)` in bytes.
+- `sdk_turns`: one row per SDK session turn `(session_id, origin, prompt, prompt_at, texts, tools, complete, interrupted, result, ended_at)`. For SDK sessions, `session_events` is written directly by the SDK hook callbacks instead of from files.
 
 ### routes
 
@@ -544,6 +561,8 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 | WS | `/ws/term/<name>?cols=&rows=[&readonly=1]` | Flow F |
 | WS | `/ws/events` | Flow F |
 | WS | `/ws/channel` | Flow F + local input |
+| POST | `/mcp/worker`, `/mcp/master` | Cardinal MCP (streamable HTTP, stateless). Session key required; `GET` → 405. See [Cardinal MCP](mcp.en.md) |
+| GET/POST/PUT/DELETE | `/api/drive…`, `POST /api/sessions/<name>/attachments` | webdrive (list·download·text read/write·upload·folders·move·delete, request attachments). `attachments` on send. See [webdrive](drive.en.md) |
 
 ---
 

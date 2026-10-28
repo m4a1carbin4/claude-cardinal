@@ -166,17 +166,17 @@
   <div>
     <div class="eyebrow">CLAUDE CARDINAL · 현황 보고서</div>
     <h1>지금 무엇이 돌아가고, 무엇이 남았나</h1>
-    <div class="meta">기준 커밋 <code>566a48e</code> · 2026-10-23 · 검증은 실제 Claude Code 세션 + 스크래치 환경에서 직접 재현</div>
+    <div class="meta">기준 브랜치 <code>sdk-mode</code> (main <code>3802957</code> + SDK 모드 · 웹 UI · 카디널 MCP) · 2026-10-27 · 검증은 실제 Claude Code 세션 + 스크래치 환경에서 직접 재현</div>
   </div>
 </header>
 
 <div class="stats">
-  <div class="stat"><div class="v">10</div><div class="k">커밋 (main)</div></div>
-  <div class="stat"><div class="v">5,128</div><div class="k">코드 줄 (CLI 1,373 · 서버 1,770 · 웹 1,985)</div></div>
-  <div class="stat ok"><div class="v">33</div><div class="k">해결한 문제</div></div>
+  <div class="stat"><div class="v">14</div><div class="k">커밋 (main 12 + sdk-mode 2)</div></div>
+  <div class="stat"><div class="v">8,177</div><div class="k">코드 줄 (CLI 1,506 · 서버 3,398 · 웹 3,273) + 스크립트 265</div></div>
+  <div class="stat ok"><div class="v">42</div><div class="k">해결한 문제</div></div>
   <div class="stat ok"><div class="v">0</div><div class="k">남은 높음 · 중간 이슈</div></div>
   <div class="stat"><div class="v">4</div><div class="k">남은 낮음 이슈</div></div>
-  <div class="stat mid"><div class="v">5</div><div class="k">미검증 / 기능 할 일</div></div>
+  <div class="stat mid"><div class="v">9</div><div class="k">미검증 / 기능 할 일</div></div>
 </div>
 
 <nav class="toc">
@@ -192,17 +192,18 @@
 
 <!-- ───────────── 요약 ───────────── -->
 <h2 id="summary">한눈에 요약</h2>
-<p class="lead">Claude Code 세션 여러 개를 tmux로 띄우고, 서로 일을 시키고, 디스코드 같은 외부 채널 메시지를 세션에 넘겨 답하게 하는 오케스트레이터.</p>
+<p class="lead">Claude Code 세션 여러 개를 tmux로(또는 서버 안 Agent SDK로) 띄우고, 서로 일을 시키고, 디스코드 같은 외부 채널 메시지를 세션에 넘겨 답하게 하는 오케스트레이터.</p>
 
 <div class="card">
-  <p><strong>돌아가는 것</strong>: 세션 생성/제어/상태 확인 CLI (작업 폴더는 기본 고정, 세션별 지정 가능), 마스터가 워커를 띄워 일 시키기 (워커는 마스터 작업 폴더를 물려받음), 서버 옵션을 전부 다루는 웹 UI와 웹 터미널, 세션 기록 SQLite, 채널 라우팅(local 채널로 끝까지 검증), 세션 안 에이전트의 직접 답장(텍스트·파일), 자동 답장.</p>
-  <p><strong>최근 집중한 것</strong>: 웹 UI(<code>web/</code>, Vite + React)로 서버 기능 전부를 화면에 올림. 응답 전에 Esc로 끊은 경우(트랜스크립트에 흔적이 없고 프롬프트가 입력창에 되돌아옴)를 화면으로 감지하고 다음 send 전에 입력창을 비움. 마스터가 만든 워커가 마스터와 같은 폴더에서 일하게 함. 그 전에는 동시성과 상태 판정(메시지 합쳐짐, 같은 이름 꼬임, Enter 먹힘, 턴 오판)을 재현하고 고침.</p>
-  <p><strong>남은 것</strong>: 높음·중간 이슈는 없음. 낮음 4건(동시 훅 덮어쓰기, Enter 3회 실패 시 입력창 잔여, 붙여넣기 감싸기, 재현 안 되는 초기 입력 합쳐짐 1건)과, 디스코드 실제 봇 연동 등 미검증 항목. 한 번에 보낼 수 있는 텍스트가 16,000바이트인 건 tmux 제약이라 안내 사항으로 둠.</p>
+  <p><strong>돌아가는 것</strong>: 세션 생성/제어/상태 확인 CLI (작업 폴더는 기본 고정, 세션별 지정 가능), 마스터가 워커를 띄워 일 시키기 (워커는 마스터 작업 폴더를 물려받음), 서버 옵션을 전부 다루는 웹 UI와 웹 터미널, 세션 기록 SQLite, 채널 라우팅(local 채널로 끝까지 검증), 세션 안 에이전트의 직접 답장(텍스트·파일), 자동 답장, 설치·실행 스크립트, <strong>SDK 모드</strong>(tmux 없이 서버 안 Claude Agent SDK 세션을 REST + 웹소켓 + 웹 UI로), 그리고 <strong>카디널 MCP</strong>: 서버가 떠 있으면 tmux·SDK 세션 안 모델 모두 서버의 MCP 도구로만 카디널을 다룸.</p>
+  <p><strong>최근 집중한 것</strong>: 카디널 MCP. 모델이 카디널을 다루는 길을 하나로: 예전엔 tmux 세션은 프롬프트에 적힌 CLI를 Bash로, SDK 세션은 프로세스 안 도구로 따로였음. 이제 서버의 <code>/mcp/worker|master</code> 하나를 둘 다 쓰고, 역할별 도구 목록(워커엔 마스터 도구가 안 보임), 세션 키로 부른 세션 확인, 서버 재시작 때 자동으로 다시 붙임. SDK 세션의 Claude in Chrome도 전역 설정을 따라 붙게 함.</p>
+  <p><strong>그 전</strong>: SDK 모드(<code>sdk-mode</code> 브랜치). 음성·모션 같은 프로그램이 화면 긁기 없이 붙을 수 있게, 세션을 서버 안 <code>ClaudeSDKClient</code>로 돌림. 생성·재시작(대화 이어서)·중단, 질문/권한을 API로 답하기, 외부 MCP 연결·상태, 실시간 <code>/ws/sdk</code>, 채널·라우트는 tmux 세션과 같은 것. 웹 UI에 대화(실시간, 질문·권한 카드)·MCP·설정 탭을 붙임. 그 전에는 <code>install.sh</code>/<code>launch.sh</code>, tmux 3.2 미만 지원, <code>--trust</code>가 claude를 끄던 문제.</p>
+  <p><strong>남은 것</strong>: 높음·중간 이슈는 없음. 낮음 4건(동시 훅 덮어쓰기, Enter 3회 실패 시 입력창 잔여, 붙여넣기 감싸기, 재현 안 되는 초기 입력 합쳐짐 1건 — 모두 tmux 쪽)과, 디스코드 실제 봇 연동·SDK 이미지 입력 등 미검증 항목. <code>sdk-mode</code>는 아직 main에 안 합쳐짐.</p>
 </div>
 
 <!-- ───────────── 구조 ───────────── -->
 <h2 id="arch">시스템 구조</h2>
-<p class="lead">세션 제어 로직은 TS CLI 한 곳. 서버는 CLI를 부르고 파일을 DB로 모으는 역할. 훅은 자기 전용 폴더에만 씀.</p>
+<p class="lead">tmux 세션 제어 로직은 TS CLI 한 곳. 서버는 CLI를 부르고 파일을 DB로 모으는 역할. 훅은 자기 전용 폴더에만 씀. SDK 세션은 CLI·tmux·파일 없이 서버 프로세스 안에서 돌고, 서버의 <code>Sessions</code>가 둘 중 하나로 보냄. 세션 안 모델은 둘 다 서버의 카디널 MCP(<code>/mcp</code>)로 카디널을 부름.</p>
 
 <figure>
   <svg viewBox="0 0 900 440" role="img" aria-label="카디널 시스템 구조도">
@@ -219,20 +220,21 @@
 
     <rect class="box" x="210" y="20" width="170" height="54" rx="10" />
     <text class="t" x="295" y="44" text-anchor="middle">브라우저 / 외부</text>
-    <text class="s" x="295" y="62" text-anchor="middle">웹 UI · 웹 터미널 · REST · WS</text>
+    <text class="s" x="295" y="62" text-anchor="middle">웹 UI · REST · WS · /ws/sdk</text>
 
     <rect class="box" x="640" y="20" width="240" height="54" rx="10" />
-    <text class="t" x="760" y="44" text-anchor="middle">사람 / 마스터 세션</text>
-    <text class="s" x="760" y="62" text-anchor="middle">cardinal CLI 직접 호출</text>
+    <text class="t" x="760" y="44" text-anchor="middle">사람</text>
+    <text class="s" x="760" y="62" text-anchor="middle">cardinal CLI 직접 호출 (직접 개입)</text>
 
     <!-- 서버 -->
-    <rect class="box hl" x="20" y="110" width="430" height="150" rx="12" />
+    <rect class="box hl" x="20" y="110" width="430" height="170" rx="12" />
     <text class="t" x="36" y="134">cardinal-server (Python FastAPI)</text>
     <text class="s" x="36" y="158">· router: 라우트 매칭 → 세션별 락 → 전달 / 자동 답장</text>
     <text class="s" x="36" y="178">· ingest: 파일 감시 → SQLite 수집</text>
     <text class="s" x="36" y="198">· terminal: /ws/term → pty 안의 tmux attach</text>
     <text class="s" x="36" y="218">· /api/health · 토큰 인증 · 로그 토큰 가림</text>
     <text class="s" x="36" y="238">· local 채널 (HTTP/WS 주입) · / 에서 web/dist 서빙</text>
+    <text class="s" x="36" y="258">· sdk (--sdk): ClaudeSDKClient 세션 · /mcp: 카디널 MCP</text>
 
     <rect class="box" x="20" y="300" width="200" height="54" rx="10" />
     <text class="t" x="120" y="324" text-anchor="middle">SQLite</text>
@@ -257,7 +259,7 @@
     <text class="t" x="606" y="324">tmux 세션 cardinal-&lt;이름&gt;</text>
     <text class="s" x="606" y="346">└ claude (--session-id, --settings 훅)</text>
     <text class="s" x="606" y="366">  워커 / 마스터 역할 프롬프트</text>
-    <text class="s" x="606" y="386">  훅 → dist/hook.js &lt;훅 폴더&gt;</text>
+    <text class="s" x="606" y="386">  훅 → dist/hook.js · MCP → 서버 /mcp</text>
 
     <!-- 화살표 -->
     <path class="ln" d="M105 74 V110" marker-end="url(#arr)" />
@@ -265,16 +267,16 @@
     <path class="ln" d="M760 74 V110" marker-end="url(#arr)" />
     <path class="ln" d="M450 165 H500" marker-end="url(#arr)" />
     <text class="s" x="452" y="158">CLI 호출</text>
-    <path class="ln" d="M120 260 V300" marker-end="url(#arr)" />
+    <path class="ln" d="M120 280 V300" marker-end="url(#arr)" />
     <path class="ln" d="M735 260 V300" marker-end="url(#arr)" />
     <text class="s" x="742" y="285">tmux 제어</text>
     <path class="ln dash" d="M590 330 H550" marker-end="url(#arr)" />
     <text class="s" x="660" y="292">meta 씀</text>
-    <path class="ln dash" d="M330 300 V275 H300 V260" marker-end="url(#arr)" />
-    <text class="s" x="338" y="286">감시·수집</text>
+    <path class="ln dash" d="M330 300 V290 H300 V280" marker-end="url(#arr)" />
+    <text class="s" x="338" y="296">감시·수집</text>
     <path class="ln dash" d="M650 260 V280 H520 V300" marker-end="url(#arr)" />
   </svg>
-  <figcaption>실선: 호출/제어 · 점선: 파일 쓰기/읽기. 훅은 서버와 직접 통신하지 않아서 서버가 꺼져 있어도 기록이 안 날아감.</figcaption>
+  <figcaption>실선: 호출/제어 · 점선: 파일 쓰기/읽기. 훅은 서버와 직접 통신하지 않아서 서버가 꺼져 있어도 기록이 안 날아감. SDK 세션은 서버와 같이 살고 죽음 (재시작 때 대화는 resume으로 이어짐).</figcaption>
 </figure>
 
 <!-- ───────────── 기능 ───────────── -->
@@ -353,6 +355,51 @@
   </div>
 
   <div class="feat">
+    <h3>SDK 모드 <span class="badge b-ok">동작</span> <span class="badge b-mid">브랜치</span></h3>
+    <ul>
+      <li><code>cardinal-server --sdk</code>: tmux 대신 서버 안 Claude Agent SDK 세션. CLI 없이 REST + <code>/ws/sdk/&lt;이름&gt;</code>만</li>
+      <li>생성 · 보내기(같은 직렬화 규칙) · 중단 · 재시작(resume) · 서버 시작 때 자동 재개</li>
+      <li>질문(AskUserQuestion)·권한 확인을 pending으로 들고 API로 답 받기 (제한 시간 선택)</li>
+      <li>외부 MCP(stdio/http/sse) 연결·상태·켜고 끄기, strict, 모델·권한 모드 바꾸기, 컨텍스트 사용량, 글자 단위 스트리밍</li>
+      <li>채널·라우트·자동 답장은 tmux와 같은 것, 답장·워커 띄우기는 프로세스 안 <code>mcp__cardinal__*</code> 도구</li>
+      <li>옵션의 env·MCP 헤더 값은 밖으로 나갈 때 <code>***</code>, 다시 보내면 원래 값 유지</li>
+    </ul>
+    <div class="proof">확인 (haiku, 스크래치 서버): 생성 0.7초 · 질문 → 답 → "Mango" · 동시 3개 → 턴 3개 · 중단 · local 채널 자동 답장 + 파일 답장 · SDK 마스터 → 워커 · 서버 재시작 뒤 기억 유지 · 외부 MCP "zebra" · <code>kill -9</code> → ended → 재시작 복구 · tmux 세션과 같이 씀</div>
+  </div>
+
+  <div class="feat">
+    <h3>SDK 웹 UI <span class="badge b-ok">동작</span></h3>
+    <ul>
+      <li>새 세션 창: tmux / SDK 고르기 + SDK 옵션 전부</li>
+      <li>대화 탭: 지난 턴 + 지금 턴(글·도구·결과·스트리밍) 실시간, 질문 카드(선택지·직접 입력), 권한 카드(허용·거부 + 사유), 중단, 끝난 세션 이어서 시작</li>
+      <li>MCP 탭(상태·도구·다시 연결·켜기/끄기), 설정 탭(모델·권한 모드, 컨텍스트, 옵션 고쳐 다시 시작)</li>
+    </ul>
+    <div class="proof">확인: 실제 Chrome으로 질문 답하기 · 스트리밍 중 중단 · MCP 추가 후 "zebra-7" · 가려진 옵션으로 재시작해도 비밀 유지 · 서버 재시작 뒤 이어서 기억 · <code>default</code> 모드 권한 거부/허용 · 콘솔 에러 없음</div>
+  </div>
+
+  <div class="feat">
+    <h3>카디널 MCP <span class="badge b-ok">동작</span> <span class="badge b-mid">브랜치</span></h3>
+    <ul>
+      <li>서버 <code>/mcp/worker</code>(reply, session_list) · <code>/mcp/master</code>(+ new/send/wait/report/kill/screen/keys/answer). streamable HTTP, stateless</li>
+      <li>tmux 세션: 서버가 떠 있으면 <code>cardinal new</code>가 <code>--mcp-config</code> + <code>--allowedTools mcp__cardinal</code> + MCP용 프롬프트. 없으면(또는 <code>--no-mcp</code>) 예전 CLI 방식</li>
+      <li>SDK 세션: 같은 HTTP MCP (프로세스 안 도구는 없앰)</li>
+      <li>부른 세션 확인: <code>HMAC(~/.cardinal/mcp.key, instanceId)</code> 헤더. 워커가 마스터 도구 → 403</li>
+      <li>서버 재시작: SDK는 다시 뜨며 붙고, 살아있는 tmux 세션엔 서버가 <code>/mcp reconnect cardinal</code>을 대신 침</li>
+    </ul>
+    <div class="proof">확인 (haiku): tmux 마스터 → tmux·SDK 워커 생성·응답 회수(둘 다 parent 기록) · SDK 마스터 → tmux 워커 send/wait/report/kill · tmux 워커가 MCP로 채널 답장 · 서버 재시작 뒤 tmux 3개 자동 재연결 · 워커 키로 master → 403</div>
+  </div>
+
+  <div class="feat">
+    <h3>설치 · 실행 스크립트 <span class="badge b-ok">동작</span></h3>
+    <ul>
+      <li><code>install.sh</code>: node 22+·pnpm·uv·tmux·claude 확인 → CLI·서버·웹 빌드 → <code>~/.local/bin/cardinal</code></li>
+      <li><code>launch.sh</code>: 서버는 127.0.0.1에만, 웹 UI(vite)가 <code>/api</code>·<code>/ws</code>를 넘김. 떠 있는 서버 재사용, <code>--host/-p/--dev/--rebuild/--sdk</code></li>
+      <li>tmux 3.2 미만도 지원 (환경변수를 셸 명령으로)</li>
+    </ul>
+    <div class="proof">확인: 시작 → 프록시 → Ctrl+C/SIGTERM에 둘 다 정리 · 떠 있는 서버는 안 끔 · 밖에 열 때 토큰 없으면 경고 · <code>--trust</code> 3/3 성공 (Claude Code 2.1.309)</div>
+  </div>
+
+  <div class="feat">
     <h3>메시지 채널 · 답장 <span class="badge b-mid">부분</span></h3>
     <ul>
       <li>라우트: 채널명 + 트리거 (prefix/contains/regex/멘션)</li>
@@ -421,6 +468,15 @@
     <tr><td class="nowrap">웹</td><td>웹 터미널이 깜빡임 (스크롤바 ↔ 리사이즈 반복)</td><td>스크롤 숨김 + 맞춤 디바운스 + 크기 바뀔 때만 resize</td></tr>
     <tr><td class="nowrap">기타</td><td>마스터 세션이 <code>cardinal</code>을 못 찾음 (PATH)</td><td>시스템 프롬프트에 절대경로</td></tr>
     <tr><td class="nowrap">기타</td><td>node-pty 실행 권한 / Node 서버</td><td>Python 서버로 이전하며 해소</td></tr>
+    <tr><td class="nowrap">설치</td><td>tmux 3.2 미만에서 <code>new-session -e</code>가 없어 세션 생성 실패</td><td>환경변수를 <code>exec env K=V … claude …</code> 셸 명령 한 줄로</td></tr>
+    <tr><td class="nowrap">설치</td><td><code>--trust</code>가 Claude Code 2.1.309에서 claude를 꺼버림 (Down이 먹히고 “No, exit” 선택)</td><td>화면에서 “Yes, I trust”에 커서가 있을 때만 Enter, 아니면 Down</td></tr>
+    <tr><td class="nowrap">설치</td><td><code>launch.sh</code>를 kill하면 vite·서버가 안 꺼짐</td><td>pid를 직접 들고 백그라운드 + <code>wait</code>, 종료 때 둘 다 정리</td></tr>
+    <tr><td class="nowrap">SDK</td><td><code>/ws/events</code> 푸시에 SDK 옵션의 env·MCP 헤더 원본이 그대로 나감 (REST만 가리고 있었음)</td><td>푸시도 같은 가림 적용</td></tr>
+    <tr><td class="nowrap">SDK</td><td>가려진 옵션(<code>***</code>)을 고쳐 restart로 보내면 키가 <code>***</code>로 덮어써질 수 있음</td><td>서버가 <code>***</code> 값은 원래 값으로 되돌림</td></tr>
+    <tr><td class="nowrap">SDK</td><td>Claude in Chrome이 SDK 세션엔 안 붙음 (터미널 claude는 <code>~/.claude.json</code>의 기본 켜기를 보지만 SDK 비대화 모드는 안 봄)</td><td><code>chrome</code> 옵션, 기본은 그 값을 읽어 <code>--chrome</code>/<code>--no-chrome</code></td></tr>
+    <tr><td class="nowrap">MCP</td><td>SDK 마스터가 만든 tmux 워커는 부모 기록이 빠짐</td><td>서버가 CLI에 <code>CARDINAL_PARENT_NAME/ID</code> 전달</td></tr>
+    <tr><td class="nowrap">MCP</td><td>서버를 다시 띄우면 tmux claude가 카디널 MCP를 다시 안 붙음 (도구가 사라진 채)</td><td>서버가 뜬 뒤 살아있는 MCP 세션마다 <code>cardinal mcp-reconnect</code></td></tr>
+    <tr><td class="nowrap">MCP</td><td>SIGTERM 뒤 서버가 몇 분째 안 꺼짐 (claude들이 GET SSE를 잡고 있고, 그 claude를 끄는 게 lifespan 종료라 서로 기다림)</td><td>MCP <code>GET</code>은 405 + <code>timeout_graceful_shutdown=5</code> → 6초</td></tr>
   </tbody>
 </table>
 </div>
@@ -469,6 +525,13 @@
       <td>tmux 제약이라 따름. 넘으면 사전 안내, 긴 내용은 파일 경로로</td>
     </tr>
     <tr>
+      <td><span class="badge b-unk">안내</span></td>
+      <td>SDK 세션별 <code>sdk.env</code> 값은 DB에 원본 저장</td>
+      <td>재시작 때 다시 써야 해서. API·웹소켓으로는 <code>***</code>로만 나감</td>
+      <td class="nowrap">코드</td>
+      <td>API 키는 세션 옵션 대신 서버 환경변수로</td>
+    </tr>
+    <tr>
       <td><span class="badge b-unk">범위 밖</span></td>
       <td>서버 재시작 시 <code>auto_reply</code> 대기 소실, <code>cardinal reply</code> 재시도 없음</td>
       <td>서버 운영은 사용자 몫</td>
@@ -487,9 +550,13 @@
   <thead><tr><th>구분</th><th>항목</th><th>메모</th></tr></thead>
   <tbody>
     <tr><td><span class="badge b-unk">미검증</span></td><td>디스코드 실제 봇 연동</td><td>토큰 필요. MESSAGE CONTENT 권한 필수. 코드와 잘못된 토큰 감지까지만 확인</td></tr>
-    <tr><td><span class="badge b-unk">미검증</span></td><td>실제 권한 승인 창(<code>waiting</code>)</td><td>테스트 세션이 auto mode라 승인 창이 안 뜸</td></tr>
+    <tr><td><span class="badge b-unk">미검증</span></td><td>tmux 세션의 실제 권한 승인 창(<code>waiting</code>)</td><td>테스트 세션이 auto mode라 승인 창이 안 뜸. SDK 세션은 <code>default</code> 모드 권한 카드까지 확인</td></tr>
     <tr><td><span class="badge b-unk">미검증</span></td><td>턴 도중 자동 압축, <code>auth_success</code> 같은 알림 타입</td><td>각각 idle/waiting으로 잘못 보일 것으로 추정</td></tr>
     <tr><td><span class="badge b-low">기능</span></td><td><code>cardinal route</code> 명령</td><td>지금은 라우트를 서버 API(웹 UI 포함)로만 붙임 → 마스터가 만든 워커에 스스로 못 붙임. 라우트 켜기/끄기 API도 없음</td></tr>
+    <tr><td><span class="badge b-unk">미검증</span></td><td>SDK: auto 아닌 권한 모드로 오래 굴리기, 이미지 입력</td><td>권한 카드는 짧게 확인. 이미지는 스트리밍 입력 블록이 필요</td></tr>
+    <tr><td><span class="badge b-low">기능</span></td><td>SDK: 서브 에이전트 메시지 따로 보기</td><td>지금은 메인 에이전트 메시지만 대화 탭에 (<code>parent_tool_use_id</code> 있는 건 뺌)</td></tr>
+    <tr><td><span class="badge b-unk">미검증</span></td><td>10분 넘게 걸리는 <code>session_wait</code> / <code>session_send wait</code></td><td>세션 쪽 <code>MCP_TOOL_TIMEOUT=3700000</code>을 줬지만 실제로 길게 돌려보진 않음</td></tr>
+    <tr><td><span class="badge b-low">기능</span></td><td>SDK 위에 음성·모션 프로그램 붙이기</td><td>SDK 모드의 목적. <code>/ws/sdk</code> + <code>partial</code>로 받을 준비는 됨</td></tr>
     <tr><td><span class="badge b-low">기능</span></td><td>카디널 캐릭터성</td><td>README 목표</td></tr>
   </tbody>
 </table>
@@ -499,7 +566,10 @@
 <h2 id="next">다음 단계 (추천 순서)</h2>
 <div class="card">
   <ol class="next">
-    <li><strong>디스코드 실제 연동 테스트</strong> — 봇 토큰 준비 후 라우트 → 전달 → 답장 → 파일 첨부까지.</li>
+    <li><strong>카디널 MCP로 지금 서버 옮기기</strong> — 7878 서버를 새 코드로 다시 띄우면 기존 <code>hello-world</code>(서버 전에 만든 tmux)는 CLI 방식 그대로, 새로 만드는 세션부터 MCP.</li>
+    <li><strong><code>sdk-mode</code> 합치기</strong> — 지금 main 서버(7878)를 새 코드로 다시 띄워 DB 마이그레이션 확인 후 main에 병합.</li>
+    <li><strong>음성·모션 프로그램 연결</strong> — <code>/ws/sdk</code> + <code>partial</code>로 TTS, 질문은 음성으로 답하기.</li>
+    <li><strong>디스코드 실제 연동 테스트</strong> — 봇 토큰 준비 후 라우트 → 전달 → 답장 → 파일 첨부까지 (tmux · SDK 세션 둘 다).</li>
     <li><strong>승인 창 환경 확인</strong> — auto mode가 아닌 세션에서 <code>waiting</code> 판정과 동시 훅 덮어쓰기 실제 영향.</li>
     <li><strong>기능</strong> — <code>cardinal route</code> (+ 라우트 켜기/끄기), 카디널 캐릭터성.</li>
     <li><strong>낮음 이슈 정리</strong> — Enter 실패 시 입력창 비우기 등.</li>
@@ -507,8 +577,8 @@
 </div>
 
 <footer>
-  문서: <code>docs/session-system.md</code> · <code>docs/server.md</code> · <code>docs/web-terminal.md</code> · <code>docs/web-ui.md</code> (각 영문판 포함) ·
-  커밋 이력: <code>918710a</code> README → <code>cdfd448</code> tmux 세션 기반 → <code>1508f72</code> 서버 분리 + 채널 + 동시성 → <code>ba6f6f2</code> 중간/낮음 이슈 + 전달 안정성 → <code>1597f68</code> Esc 사람 개입 + 파서 + 서버 시작 전 확인 → <code>092ef84</code> 세션별 작업 폴더 + 신뢰 다이얼로그 → <code>566a48e</code> 웹 UI + 마스터 작업 폴더 상속 + 응답 전 중단 처리
+  문서: <code>docs/session-system.md</code> · <code>docs/server.md</code> · <code>docs/web-terminal.md</code> · <code>docs/web-ui.md</code> · <code>docs/sdk-mode.md</code> · <code>docs/mcp.md</code> (각 영문판 포함) ·
+  커밋 이력: <code>918710a</code> README → <code>cdfd448</code> tmux 세션 기반 → <code>1508f72</code> 서버 분리 + 채널 + 동시성 → <code>ba6f6f2</code> 중간/낮음 이슈 + 전달 안정성 → <code>1597f68</code> Esc 사람 개입 + 파서 + 서버 시작 전 확인 → <code>092ef84</code> 세션별 작업 폴더 + 신뢰 다이얼로그 → <code>566a48e</code> 웹 UI + 마스터 작업 폴더 상속 + 응답 전 중단 처리 → <code>ae8e1b3</code> install.sh / launch.sh → <code>3802957</code> tmux 3.2 미만 + <code>--trust</code> 수정 → (<code>sdk-mode</code>) <code>9fc2a6d</code> SDK 모드 서버 → SDK 모드 웹 UI + 카디널 MCP + 문서 정리
 </footer>
 
 </main>

@@ -4,6 +4,8 @@
 - 세션 기록: ~/.cardinal 파일 → SQLite 수집
 - 웹 터미널: /ws/term/<이름>
 - 메시지 채널: 디스코드(DISCORD_TOKEN 있으면) + local, 라우트 따라 세션에 전달, cardinal reply 로 답장
+- SDK 모드(--sdk): tmux 없이 서버 안에서 Claude Agent SDK 세션을 돌림 (backend=sdk). 채널·라우트는 같이 씀
+- 웹드라이브: 사람과 세션이 같이 쓰는 파일 공간 (/api/drive, 세션마다 /sessions/<이름>, drive.py)
 """
 
 import asyncio
@@ -27,9 +29,13 @@ from .channel.local_adapter import LocalAdapter
 from .cli import Cli, CliError
 from .config import REPO_ROOT, Settings, load
 from .db import DB
+from .drive import ATTACHMENTS, Drive, DriveError
 from .ingest import Ingestor
 from .router import Router
 from .running import running_elsewhere
+from .mcp_server import CardinalMcp
+from .sdk import SdkError, SdkManager, redact_options, unredact
+from .sessions import SessionError, Sessions
 
 log = logging.getLogger("cardinal")
 # 웹 UI (web/, Vite + React) 빌드 결과. cd web && pnpm install && pnpm build
@@ -102,23 +108,114 @@ class RouteIn(BaseModel):
     auto_reply: bool = False
 
 
+PermissionModeT = Literal["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions", "auto"]
+
+
+class SdkOptionsIn(BaseModel):
+    """backend=sdk 세션 설정 (ClaudeAgentOptions 로 바뀜). restart 때 일부만 바꿔 다시 쓸 수 있음"""
+
+    permission_mode: PermissionModeT = "auto"
+    model: str | None = None
+    fallback_model: str | None = None
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    append_prompt: str | None = None  # 카디널 역할 프롬프트 뒤에 붙일 시스템 프롬프트
+    # 외부 MCP 서버: {"이름": {"type": "stdio", "command": ..., "args": [...], "env": {...}}
+    #                         | {"type": "http"|"sse", "url": ..., "headers": {...}}}
+    mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # True 면 위 mcp_servers(+ cardinal)만 씀. 사용자 설정/프로젝트 .mcp.json/claude.ai 커넥터/플러그인 MCP 는 안 붙음
+    strict_mcp_config: bool = False
+    allowed_tools: list[str] = Field(default_factory=list)
+    disallowed_tools: list[str] = Field(default_factory=list)
+    add_dirs: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    partial: bool = False  # 토큰 단위 스트리밍 이벤트(StreamEvent)를 /ws/sdk 로 (음성 합성 등)
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
+    setting_sources: list[Literal["user", "project", "local"]] | None = None
+    question_timeout_s: int | None = None  # 질문/권한에 이 시간 안에 답이 없으면 "스스로 판단" 으로 돌려줌
+    resume_on_start: bool = False  # 서버가 다시 뜰 때 이 세션을 이어서 자동으로 띄움
+    # Claude in Chrome (브라우저 조작 MCP). None 이면 ~/.claude.json 의 claudeInChromeDefaultEnabled 를 따름
+    # (터미널 claude 는 그 값을 보지만 SDK 의 비대화 모드는 안 봐서 --chrome 을 직접 붙여야 함)
+    chrome: bool | None = None
+
+
+def check_sdk_options(o: SdkOptionsIn) -> dict:
+    for name, srv in o.mcp_servers.items():
+        if name == "cardinal":
+            raise HTTPException(400, "mcp_servers 의 cardinal 은 카디널 도구용 예약 이름")
+        kind = srv.get("type", "stdio")
+        if kind == "stdio" and not srv.get("command"):
+            raise HTTPException(400, f"MCP {name}: stdio 는 command 필요")
+        if kind in ("http", "sse") and not srv.get("url"):
+            raise HTTPException(400, f"MCP {name}: {kind} 는 url 필요")
+        if kind not in ("stdio", "http", "sse"):
+            raise HTTPException(400, f"MCP {name}: 모르는 type {kind}")
+    for d in o.add_dirs:
+        if not os.path.isabs(d):
+            raise HTTPException(400, f"add_dirs 는 절대 경로: {d}")
+    return o.model_dump()
+
+
 class SessionIn(BaseModel):
     name: str
     role: Literal["worker", "master"] = "worker"
     prompt: str | None = None
     cwd: str | None = None  # 세션 작업 폴더 (절대 경로). 없으면 고정 워크스페이스
-    trust: bool = False  # 작업 폴더 신뢰 다이얼로그 자동 수락
-    args: list[str] = Field(default_factory=list)
+    trust: bool = False  # 작업 폴더 신뢰 다이얼로그 자동 수락 (tmux)
+    args: list[str] = Field(default_factory=list)  # claude 추가 인자 (tmux)
     routes: list[RouteIn] = Field(default_factory=list)
+    backend: Literal["tmux", "sdk"] | None = None  # 없으면 서버 기본 (--sdk 면 sdk)
+    sdk: SdkOptionsIn | None = None
+
+
+class RestartIn(BaseModel):
+    resume: bool = True  # False 면 새 대화로
+    sdk: dict[str, Any] | None = None  # 바꿀 sdk 옵션만 (나머지는 그대로). env/헤더 값이 *** 면 원래 값 유지
+
+
+class AnswerIn(BaseModel):
+    answers: dict[str, str] | None = None  # 질문: {질문 텍스트: 고른 답(라벨 또는 자유 입력)}
+    allow: bool = True  # 권한: 허용/거부. 질문에서 False 면 "답 안 함" 으로 돌려줌
+    message: str | None = None  # 거부 사유 (claude 에 전달)
+    updated_input: dict[str, Any] | None = None  # 권한 허용 시 도구 입력을 바꿔서
+
+
+class McpActionIn(BaseModel):
+    action: Literal["reconnect", "enable", "disable"]
+
+
+class ModelIn(BaseModel):
+    model: str | None = None  # None 이면 기본 모델
+
+
+class ModeIn(BaseModel):
+    mode: PermissionModeT
 
 
 class SendIn(BaseModel):
     text: str
+    attachments: list[str] = Field(default_factory=list)  # 웹드라이브 경로. 지시 뒤에 첨부 안내(로컬 경로 포함)가 붙음
     wait: bool = False
     timeout_s: int | None = None
     submit: bool = True
     force: bool = False
     now: bool = False  # 작업 중이어도 안 기다리고 바로 (진행 중인 턴에 끼어듦)
+
+
+class DrivePathIn(BaseModel):
+    path: str
+
+
+class DriveTextIn(BaseModel):
+    path: str
+    content: str
+    overwrite: bool = True  # False 면 새 파일만 (있으면 400)
+
+
+class DriveMoveIn(BaseModel):
+    src: str
+    dst: str  # 있는 폴더면 그 안으로, 아니면 새 이름
+    overwrite: bool = False
 
 
 class KeysIn(BaseModel):
@@ -145,25 +242,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 만들고 참조를 안 들고 있으면 태스크가 끝나기 전에 GC 로 사라질 수 있음
     bg_tasks: set[asyncio.Task] = set()
 
-    def sessions_changed() -> None:
-        t = asyncio.get_running_loop().create_task(
-            events_hub.publish({"type": "sessions", "sessions": db.sessions()})
-        )
+    def bg(coro) -> None:
+        t = asyncio.get_running_loop().create_task(coro)
         bg_tasks.add(t)
         t.add_done_callback(bg_tasks.discard)
 
+    main_loop: list[asyncio.AbstractEventLoop] = []
+
+    def drive_changed(path: str) -> None:
+        # MCP 도구는 파일 작업을 스레드에서 해서 거기서 불릴 수도 있음 → 서버 루프로 넘김
+        publish = lambda: bg(events_hub.publish({"type": "drive", "path": path}))  # noqa: E731
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if main_loop:
+                main_loop[0].call_soon_threadsafe(publish)
+            return
+        publish()
+
+    # 웹드라이브. 파일이 바뀌면 웹 UI 가 그 폴더를 다시 읽게 알림
+    drive = Drive(settings.drive, settings.drive_max_upload, drive_changed)
+
+    def ensure_drive_dirs() -> None:
+        # 모든 세션은 자기 드라이브 폴더가 있음 (CLI 로 직접 만든 세션도 수집되면 여기서 생김)
+        for row in db.sessions():
+            with contextlib.suppress(OSError, DriveError):
+                drive.ensure_session(row["name"])
+
+    def sessions_changed() -> None:
+        ensure_drive_dirs()
+        bg(events_hub.publish({"type": "sessions", "sessions": [pub(x) for x in db.sessions()]}))
+
     ingestor = Ingestor(settings, db, sessions_changed)
-    router = Router(settings, db, cli, channel_hub.publish)
+    # sdk 세션 기록 정리(지난 서버가 남긴 것)는 SDK 모드가 꺼져 있어도 함. 새로 만들기는 --sdk 일 때만
+    sdk_mgr = SdkManager(settings, db, sessions_changed)
+    sessions = Sessions(settings, db, cli, ingestor, sdk_mgr, drive)
+    router = Router(settings, db, sessions, channel_hub.publish)
+    sdk_mgr.router, sdk_mgr.facade = router, sessions
+    # 세션 안 모델이 카디널을 다루는 MCP (tmux·SDK 공통). SDK 세션은 여기 주소와 키로 붙음
+    cmcp = CardinalMcp(settings, db, sessions, router, ingestor, drive)
+    sdk_mgr.mcp_secret = cmcp.secret
     local = LocalAdapter(channel_hub.publish)
     router.add_adapter(local)
+
+    async def reconnect_tmux_mcp(rows: list[dict]) -> None:
+        if not rows:
+            return
+        await sdk_mgr.wait_serving()
+
+        async def one(name: str) -> None:
+            try:
+                # 작업 중이면 끝날 때까지 기다렸다가 침 (send 와 같은 줄)
+                await cli.run("mcp-reconnect", name, timeout=700)
+                log.info("카디널 MCP 다시 붙임: %s", name)
+            except CliError as e:
+                log.warning("카디널 MCP 다시 붙이기 실패: %s (%s)", name, e)
+
+        await asyncio.gather(*(one(r["name"]) for r in rows))
+
+    async def revive_tmux() -> None:
+        """재부팅 등으로 tmux 가 없어진 세션을 같은 세션·같은 claude 대화로 다시 띄움 (cardinal kill 로 끝낸 건 빼고).
+        카디널 MCP 를 붙여야 해서 서버가 요청을 받기 시작한 뒤에"""
+        if os.environ.get("CARDINAL_TMUX_REVIVE", "1") in ("0", "false"):
+            return
+        await sdk_mgr.wait_serving()
+        try:
+            out = await cli.json("revive", "--all", timeout=300, env={"CARDINAL_SERVER_URL": settings.url})
+        except (CliError, ValueError) as e:
+            log.warning("tmux 세션 되살리기 실패: %s", e)
+            return
+        for r in out:
+            if "error" in r:
+                log.warning("tmux 세션 되살리기 실패: %s (%s)", r["name"], r["error"])
+            else:
+                log.info("tmux 세션 되살림: %s (%s)", r["name"], "대화 이어서" if r["resumed"] else "새 대화")
+        if out:
+            await ingestor.sync()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # uvicorn 이 로깅 설정을 끝낸 뒤라 여기서 붙임
         for name in ("uvicorn.access", "uvicorn.error"):
             logging.getLogger(name).addFilter(_RedactToken())
+        main_loop.append(asyncio.get_running_loop())
         await ingestor.sync()
+        ensure_drive_dirs()
+        await sdk_mgr.startup()
         ingest_task = asyncio.create_task(ingestor.run())
+        mcp_ctx = cmcp.run()
+        await mcp_ctx.__aenter__()
+        # resume_on_start 세션은 서버가 요청을 받기 시작한 뒤에 띄움 (카디널 MCP 에 붙어야 해서)
+        resume_task = asyncio.create_task(sdk_mgr.resume_when_serving())
+        # 살아있는 tmux 세션의 claude 는 서버가 꺼질 때 끊긴 카디널 MCP 를 스스로 안 붙음 → 하나씩 /mcp reconnect.
+        # 대상은 지금 살아있는 것만 (아래에서 되살리는 세션은 새로 붙으니까 빼야 함)
+        reconnect_task = asyncio.create_task(reconnect_tmux_mcp(
+            [r for r in db.sessions() if r["backend"] == "tmux" and r["alive"] and r.get("mcp")]))
+        revive_task = asyncio.create_task(revive_tmux())
         await local.start(router.handle)
         discord = None
         app.state.discord = None
@@ -191,10 +365,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if json.loads(info.read_text()).get("pid") == os.getpid():
                     info.unlink()
             ingest_task.cancel()
+            resume_task.cancel()
+            reconnect_task.cancel()
+            revive_task.cancel()
+            await sdk_mgr.shutdown()
+            await mcp_ctx.__aexit__(None, None, None)
             if discord:
                 await discord.stop()
 
     app = FastAPI(title="Cardinal", lifespan=lifespan)
+    # 인증은 MCP 쪽 헤더(세션 키)로 따로 함. 웹 UI 전체 받기(/{path}) 보다 먼저 붙여야 GET 이 안 뺏김
+    app.mount("/mcp", cmcp.app)
     app.state.settings, app.state.db, app.state.router = settings, db, router
 
     # ---------- 인증 ----------
@@ -221,6 +402,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, f"모르는 세션: {name}")
         return s
 
+    def pub(row: dict | None) -> dict | None:
+        """API 로 내보내는 세션 행: sdk 옵션의 env/헤더 값은 가림"""
+        if row and row.get("sdk_options") is not None:
+            row = {**row, "sdk_options": redact_options(row["sdk_options"])}
+        return row
+
+    def sess_err(e: Exception) -> HTTPException:
+        msg = str(e)
+        return HTTPException(404 if msg.startswith("모르는") else 400, msg)
+
+    def sdk_or_400(name: str):
+        session_or_404(name)
+        try:
+            return sessions.sdk_session(name)
+        except SessionError as e:
+            raise sess_err(e)
+
+    def tmux_only(name: str) -> None:
+        if session_or_404(name)["backend"] == "sdk":
+            raise HTTPException(400, f"SDK 세션엔 tmux 화면/키가 없음: {name} (/ws/sdk/{name} 사용)")
+
     api = [Depends(auth)]
 
     # ---------- 페이지 ----------
@@ -238,53 +440,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "ok": True,
             "channels": {"local": "ready", "discord": d.status if d else "off"},
             "sessions": len(db.sessions()),
+            "sdk": {"enabled": settings.sdk, "default_backend": "sdk" if settings.sdk else "tmux",
+                    "alive": sum(1 for x in sdk_mgr.sessions.values() if x.alive)},
         }
 
     # ---------- 세션 ----------
 
     @app.get("/api/sessions", dependencies=api)
     async def list_sessions(all: bool = False):
-        return db.sessions(include_deleted=all)
+        return [pub(s) for s in db.sessions(include_deleted=all)]
 
     @app.post("/api/sessions", status_code=201, dependencies=api)
     async def create_session(body: SessionIn):
         # 상대 경로는 서버 프로세스 위치 기준이 돼서 헷갈리니 절대 경로만
         if body.cwd and not os.path.isabs(body.cwd):
             raise HTTPException(400, f"cwd 는 절대 경로여야 함: {body.cwd}")
+        backend = body.backend or ("sdk" if settings.sdk else "tmux")
+        if body.sdk and backend != "sdk":
+            raise HTTPException(400, "sdk 옵션은 backend=sdk 에서만")
+        sdk_opts = check_sdk_options(body.sdk or SdkOptionsIn()) if backend == "sdk" else None
         try:
-            st = await cli.new(body.name, body.role, body.prompt, body.args, cwd=body.cwd, trust=body.trust)
-        except CliError as e:
-            raise cli_call(e)
-        await ingestor.sync()
-        sid = st.get("instanceId") or st["claudeSessionId"]
-        routes = [db.add_route(sid, r.model_dump()) for r in body.routes]
-        return {**(db.session_by_name(body.name) or {}), "routes": routes}
+            row = await sessions.create(name=body.name, role=body.role, prompt=body.prompt, cwd=body.cwd,
+                                        backend=backend, sdk=sdk_opts, trust=body.trust, args=body.args)
+        except SessionError as e:
+            raise sess_err(e)
+        routes = [db.add_route(row["id"], r.model_dump()) for r in body.routes]
+        return {**(pub(row) or {}), "routes": routes}
 
     @app.get("/api/sessions/{name}", dependencies=api)
     async def get_session(name: str):
         s = session_or_404(name)
-        return {**s, "routes": db.routes(s["id"])}
+        out = {**(pub(s) or {}), "routes": db.routes(s["id"])}
+        if s["backend"] == "sdk" and name in sdk_mgr.sessions:
+            sess = sdk_mgr.sessions[name]
+            out["pending"] = [p.public() for p in sess.pending.values()]
+        return out
 
     @app.delete("/api/sessions/{name}", dependencies=api)
     async def delete_session(name: str, purge: bool = False):
         try:
-            await cli.run("kill", name, *(["--purge"] if purge else []))
-        except CliError as e:
-            raise cli_call(e)
-        await ingestor.sync()
+            await sessions.kill(name, purge)
+        except SessionError as e:
+            raise sess_err(e)
         return {"ok": True}
 
     @app.post("/api/sessions/{name}/send", dependencies=api)
     async def send(name: str, body: SendIn):
         try:
             timeout_s = body.timeout_s or (DEFAULT_WAIT_TIMEOUT_S if body.wait else None)
-            return await cli.send(name, body.text, wait=body.wait, timeout_s=timeout_s,
-                                  submit=body.submit, force=body.force, now=body.now)
-        except CliError as e:
-            raise cli_call(e)
+            return await sessions.send(name, body.text, wait=body.wait, timeout_s=timeout_s,
+                                       submit=body.submit, force=body.force, now=body.now,
+                                       attachments=body.attachments)
+        except SessionError as e:
+            raise sess_err(e)
 
     @app.post("/api/sessions/{name}/keys", dependencies=api)
     async def keys(name: str, body: KeysIn):
+        tmux_only(name)
         try:
             await cli.run("keys", name, *body.keys)
         except CliError as e:
@@ -293,6 +505,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/sessions/{name}/screen", dependencies=api)
     async def screen(name: str, lines: int = 0):
+        tmux_only(name)
         try:
             return {"screen": await cli.run("screen", name, "--lines", str(lines))}
         except CliError as e:
@@ -301,13 +514,109 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/sessions/{name}/report", dependencies=api)
     async def report(name: str):
         try:
-            return await cli.json("report", name)
-        except CliError as e:
-            raise cli_call(e)
+            return await sessions.report(name)
+        except SessionError as e:
+            raise sess_err(e)
 
     @app.get("/api/sessions/{name}/events", dependencies=api)
     async def session_events(name: str, limit: int = 200):
         return db.session_events(session_or_404(name)["id"], limit)
+
+    # ---------- SDK 세션 제어 ----------
+
+    @app.post("/api/sessions/{name}/interrupt", dependencies=api)
+    async def sdk_interrupt(name: str):
+        """작업 중인 턴 중단 (tmux 의 Esc). 기다리던 질문은 거부로 풀림"""
+        try:
+            await sdk_or_400(name).interrupt()
+        except SdkError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    @app.post("/api/sessions/{name}/restart", dependencies=api)
+    async def sdk_restart(name: str, body: RestartIn | None = None):
+        """끝난/살아있는 SDK 세션 다시 띄우기. 기본은 마지막 대화를 이어서 (resume).
+        tmux 세션은 tmux 가 없어진 것만: 같은 세션·같은 claude 대화로 (cardinal revive)"""
+        body = body or RestartIn()
+        if session_or_404(name)["backend"] == "tmux":
+            if body.sdk:
+                raise HTTPException(400, "tmux 세션엔 sdk 옵션이 없음")
+            try:
+                await cli.run("revive", name, timeout=120, env={"CARDINAL_SERVER_URL": settings.url})
+            except CliError as e:
+                raise cli_call(e)
+            await ingestor.sync()
+            return pub(db.session_by_name(name))
+        sess = sdk_or_400(name)
+        if not settings.sdk:
+            raise HTTPException(400, "SDK 모드가 꺼져 있음 (cardinal-server --sdk)")
+        patch = None
+        if body.sdk:
+            patch = check_sdk_options(SdkOptionsIn(**{**sess.options, **unredact(body.sdk, sess.options)}))
+        try:
+            await sdk_mgr.restart(name, resume=body.resume, options=patch)
+        except SdkError as e:
+            raise HTTPException(400, str(e))
+        return pub(db.session_by_id(sess.id))
+
+    @app.get("/api/sessions/{name}/pending", dependencies=api)
+    async def sdk_pending(name: str):
+        return [p.public() for p in sdk_or_400(name).pending.values()]
+
+    @app.post("/api/sessions/{name}/pending/{pid}", dependencies=api)
+    async def sdk_answer(name: str, pid: str, body: AnswerIn):
+        try:
+            return sdk_or_400(name).answer(pid, body.answers, body.allow, body.message, body.updated_input)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    def live_client(name: str):
+        sess = sdk_or_400(name)
+        if not sess.alive or not sess.client:
+            raise HTTPException(400, f"세션 안 살아있음: {name}")
+        return sess
+
+    @app.get("/api/sessions/{name}/mcp", dependencies=api)
+    async def sdk_mcp(name: str):
+        return await live_client(name).client.get_mcp_status()
+
+    @app.post("/api/sessions/{name}/mcp/{server}", dependencies=api)
+    async def sdk_mcp_action(name: str, server: str, body: McpActionIn):
+        c = live_client(name).client
+        try:
+            if body.action == "reconnect":
+                await c.reconnect_mcp_server(server)
+            else:
+                await c.toggle_mcp_server(server, body.action == "enable")
+        except Exception as e:
+            raise HTTPException(400, f"MCP {server} {body.action} 실패: {e}")
+        return await c.get_mcp_status()
+
+    @app.post("/api/sessions/{name}/model", dependencies=api)
+    async def sdk_model(name: str, body: ModelIn):
+        sess = live_client(name)
+        await sess.client.set_model(body.model)
+        sess.options = {**sess.options, "model": body.model}
+        db.update_sdk_session(sess.id, sdk_options=sess.options)
+        return {"ok": True, "model": body.model}
+
+    @app.post("/api/sessions/{name}/permission-mode", dependencies=api)
+    async def sdk_mode(name: str, body: ModeIn):
+        sess = live_client(name)
+        await sess.client.set_permission_mode(body.mode)
+        sess.options = {**sess.options, "permission_mode": body.mode}
+        db.update_sdk_session(sess.id, sdk_options=sess.options)
+        return {"ok": True, "mode": body.mode}
+
+    @app.get("/api/sessions/{name}/context", dependencies=api)
+    async def sdk_context(name: str):
+        return await live_client(name).client.get_context_usage()
+
+    @app.get("/api/sessions/{name}/turns", dependencies=api)
+    async def sdk_turns(name: str, limit: int = 20):
+        return db.sdk_turns(sdk_or_400(name).id, limit)
 
     # ---------- 라우트 ----------
 
@@ -359,6 +668,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except RuntimeError as e:
             raise HTTPException(502, str(e))
 
+    # ---------- 웹드라이브 ----------
+
+    def drive_call(fn, *a, **kw):
+        try:
+            return fn(*a, **kw)
+        except DriveError as e:
+            raise HTTPException(404 if str(e).startswith(("없음", "파일이 없음")) else 400, str(e))
+        except OSError as e:
+            raise HTTPException(400, f"파일 작업 실패: {e}")
+
+    async def save_uploads(dir_path: str, files: list[UploadFile], overwrite: bool) -> list[dict]:
+        out = []
+        for f in files:
+            try:
+                out.append(await drive.save_upload(dir_path, f.filename or "file", f.read, overwrite))
+            except DriveError as e:
+                raise HTTPException(413 if "너무 큼" in str(e) else 400, str(e))
+            except OSError as e:
+                raise HTTPException(400, f"저장 실패: {e}")
+        return out
+
+    @app.get("/api/drive", dependencies=api)
+    async def drive_list(path: str = "/"):
+        """폴더 내용 (entries: name, path, type, size, mtime, content_type, local_path)"""
+        return drive_call(drive.list, path)
+
+    @app.get("/api/drive/file", dependencies=api)
+    async def drive_file(path: str, download: bool = False):
+        """파일 받기. download=false 면 브라우저에서 바로 보기 (이미지, PDF 등)"""
+        f = drive_call(drive.file, path)
+        return FileResponse(f, filename=f.name, content_disposition_type="attachment" if download else "inline")
+
+    @app.get("/api/drive/text", dependencies=api)
+    async def drive_read_text(path: str):
+        """UTF-8 글 파일 내용 (웹 편집기용, 2MB 까지)"""
+        return drive_call(drive.read_text, path)
+
+    @app.put("/api/drive/text", dependencies=api)
+    async def drive_write_text(body: DriveTextIn):
+        """글 파일 만들기/고치기 (폴더는 알아서 만듦)"""
+        return drive_call(drive.write_text, body.path, body.content, "/", body.overwrite)
+
+    @app.post("/api/drive/upload", status_code=201, dependencies=api)
+    async def drive_upload(path: str = Form("/shared"), overwrite: bool = Form(False),
+                           files: list[UploadFile] = File(...)):
+        """path 폴더에 파일 올리기 (없으면 만듦). 같은 이름은 overwrite 가 아니면 'a (1).txt' 로"""
+        drive_call(drive.local, path)
+        return await save_uploads(path, files, overwrite)
+
+    @app.post("/api/drive/mkdir", status_code=201, dependencies=api)
+    async def drive_mkdir(body: DrivePathIn):
+        return drive_call(drive.mkdir, body.path)
+
+    @app.post("/api/drive/move", dependencies=api)
+    async def drive_move(body: DriveMoveIn):
+        return drive_call(drive.move, body.src, body.dst, body.overwrite)
+
+    @app.delete("/api/drive", dependencies=api)
+    async def drive_delete(path: str, recursive: bool = False):
+        drive_call(drive.delete, path, recursive)
+        return {"ok": True}
+
+    @app.post("/api/sessions/{name}/attachments", status_code=201, dependencies=api)
+    async def session_attachments(name: str, files: list[UploadFile] = File(...)):
+        """요청에 붙일 파일을 세션 드라이브 폴더(attachments/)에 저장. 돌려받은 path 를 send 의 attachments 로"""
+        session_or_404(name)
+        drive.ensure_session(name)
+        return await save_uploads(f"{drive.session_path(name)}/{ATTACHMENTS}", files, False)
+
     # ---------- 웹소켓 ----------
 
     @app.websocket("/ws/term/{name}")
@@ -368,6 +746,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s = db.session_by_name(name)
         if not s or not s["alive"]:
             await ws.close(code=4404, reason="unknown or dead session")
+            return
+        if s["backend"] == "sdk":
+            await ws.close(code=4400, reason="sdk session has no terminal (use /ws/sdk)")
             return
         await ws.accept()
         await terminal.bridge(ws, s["tmux"], cols, rows, bool(readonly))
@@ -387,10 +768,83 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             hub.clients.discard(ws)
 
+    @app.websocket("/ws/sdk/{name}")
+    async def ws_sdk(ws: WebSocket, name: str):
+        """SDK 세션 실시간 연결 (프로그램용: 음성/모션 등).
+        받음: {"type":"hello"}, {"type":"state"}, {"type":"message","message":<SDK 메시지>}, {"type":"turn"},
+              {"type":"pending"}, {"type":"pending_done"}, {"type":"result","id":..,"ok":..,"data"|"error":..}
+        보냄: {"type":"send","text":..,"attachments":[<드라이브 경로>],"wait":bool,"now":bool,"force":bool,"timeout_s":..,
+               "id":<내 요청 ID>},
+              {"type":"interrupt","id":..}, {"type":"answer","pending_id":..,"answers":{..}|"allow":bool,"id":..}"""
+        if not await ws_auth(ws):
+            return
+        row = db.session_by_name(name)
+        sess = sdk_mgr.sessions.get(name) if row and row["backend"] == "sdk" else None
+        if not sess:
+            await ws.close(code=4404, reason="unknown sdk session")
+            return
+        await ws.accept()
+        q: asyncio.Queue = asyncio.Queue(maxsize=2000)
+        sess.subscribers.add(q)
+        tasks: set[asyncio.Task] = set()
+
+        async def send_json(m: dict) -> None:
+            await ws.send_text(json.dumps(m, default=str, ensure_ascii=False))
+
+        async def pump() -> None:
+            while True:
+                await send_json(await q.get())
+
+        async def run(cmd: dict) -> None:
+            rid = cmd.get("id")
+            try:
+                kind = cmd.get("type")
+                if kind == "send":
+                    data = await sessions.send(name, str(cmd.get("text") or ""), wait=bool(cmd.get("wait")),
+                                               timeout_s=cmd.get("timeout_s"), now=bool(cmd.get("now")),
+                                               force=bool(cmd.get("force")),
+                                               attachments=[str(a) for a in cmd.get("attachments") or []])
+                elif kind == "interrupt":
+                    await sess.interrupt()
+                    data = {"ok": True}
+                elif kind == "answer":
+                    data = sess.answer(cmd["pending_id"], cmd.get("answers"), cmd.get("allow", True),
+                                       cmd.get("message"), cmd.get("updated_input"))
+                else:
+                    raise ValueError(f"모르는 type: {kind}")
+                await q.put({"type": "result", "id": rid, "ok": True, "data": data})
+            except Exception as e:
+                await q.put({"type": "result", "id": rid, "ok": False, "error": str(e)})
+
+        pumper = asyncio.create_task(pump())
+        try:
+            await send_json({"type": "hello", "session": pub(db.session_by_id(sess.id)), "status": sess.status(),
+                             "pending": [p.public() for p in sess.pending.values()], "report": sess.report()})
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    cmd = json.loads(raw)
+                except ValueError:
+                    await q.put({"type": "result", "ok": False, "error": "JSON 아님"})
+                    continue
+                if cmd.get("type") == "send" and not str(cmd.get("text") or "").strip() and not cmd.get("attachments"):
+                    await q.put({"type": "result", "id": cmd.get("id"), "ok": False, "error": "text 필요"})
+                    continue
+                t = asyncio.create_task(run(cmd))
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            sess.subscribers.discard(q)
+            pumper.cancel()
+            # 진행 중인 요청은 끊지 않음: send 를 중간에 취소하면 세션 쪽 순서가 꼬일 수 있음.
+            # 끝나면 결과만 아무도 안 읽는 큐에 들어가고 버려짐
+
     @app.websocket("/ws/events")
     async def ws_events(ws: WebSocket):
         if await ws_auth(ws):
-            await subscribe(ws, events_hub, {"type": "sessions", "sessions": db.sessions()})
+            await subscribe(ws, events_hub, {"type": "sessions", "sessions": [pub(x) for x in db.sessions()]})
 
     @app.websocket("/ws/channel")
     async def ws_channel(ws: WebSocket):

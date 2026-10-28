@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   claude_session_id TEXT,                      -- 지금 claude 세션 ID (/clear 하면 바뀜)
   parent_id         TEXT,                      -- 이 세션을 만든 세션의 고유 키 (마스터가 띄운 워커)
   parent_name       TEXT,
+  backend           TEXT NOT NULL DEFAULT 'tmux', -- tmux (CLI + Claude Code TUI) | sdk (서버 안 Claude Agent SDK)
+  sdk_options       TEXT,                      -- sdk 세션 설정 (JSON). restart 할 때 그대로 다시 씀
+  mcp               INTEGER NOT NULL DEFAULT 0, -- 카디널 MCP 에 붙어 있음 (sdk 는 항상, tmux 는 서버가 떠 있을 때 만든 것)
   updated_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_name ON sessions(name, created_at);
@@ -44,6 +47,21 @@ CREATE TABLE IF NOT EXISTS session_events (   -- 훅 이벤트 (events.jsonl 수
   data        TEXT NOT NULL                     -- 원본 줄 그대로
 );
 CREATE INDEX IF NOT EXISTS session_events_sid ON session_events(session_id, id);
+
+CREATE TABLE IF NOT EXISTS sdk_turns (        -- sdk 세션의 턴 (tmux 세션은 트랜스크립트에서 읽음)
+  id          INTEGER PRIMARY KEY,
+  session_id  TEXT NOT NULL REFERENCES sessions(id),
+  origin      TEXT NOT NULL,                    -- human (send) | agent (백그라운드 작업 알림 등)
+  prompt      TEXT NOT NULL,
+  prompt_at   TEXT NOT NULL,
+  texts       TEXT NOT NULL DEFAULT '[]',
+  tools       TEXT NOT NULL DEFAULT '[]',
+  complete    INTEGER NOT NULL DEFAULT 0,
+  interrupted INTEGER NOT NULL DEFAULT 0,
+  result      TEXT,                             -- ResultMessage 요약 (JSON)
+  ended_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS sdk_turns_sid ON sdk_turns(session_id, id);
 
 CREATE TABLE IF NOT EXISTS ingest_offsets (
   session_id  TEXT PRIMARY KEY,
@@ -108,10 +126,10 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     if r is None:
         return None
     d = dict(r)
-    for k in ("claude_args", "attachments", "files", "external_ids", "data"):
+    for k in ("claude_args", "attachments", "files", "external_ids", "data", "sdk_options", "texts", "tools", "result"):
         if k in d and isinstance(d[k], str):
             d[k] = json.loads(d[k])
-    for k in ("alive", "auto_reply", "enabled"):
+    for k in ("alive", "auto_reply", "enabled", "complete", "interrupted", "mcp"):
         if k in d and d[k] is not None:
             d[k] = bool(d[k])
     return d
@@ -133,9 +151,14 @@ class DB:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(sessions)")}
         if "claude_session_id" not in cols:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
-        for col in ("parent_id", "parent_name"):
+        for col in ("parent_id", "parent_name", "sdk_options"):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
+        if "backend" not in cols:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN backend TEXT NOT NULL DEFAULT 'tmux'")
+        if "mcp" not in cols:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN mcp INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("UPDATE sessions SET mcp=1 WHERE backend='sdk'")
 
     def q(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
         with self.lock:
@@ -159,9 +182,10 @@ class DB:
             """
             INSERT INTO sessions (id, name, role, tmux, cwd, claude_args, created_at, alive,
                                   state, state_at, last_event, detail, tool, transcript_path,
-                                  claude_session_id, parent_id, parent_name, updated_at)
+                                  claude_session_id, parent_id, parent_name, mcp, updated_at)
             VALUES (:id, :name, :role, :tmux, :cwd, :args, :created, :alive,
-                    :state, :state_at, :event, :detail, :tool, :transcript, :claude_sid, :parent_id, :parent_name, :now)
+                    :state, :state_at, :event, :detail, :tool, :transcript, :claude_sid, :parent_id, :parent_name,
+                    :mcp, :now)
             ON CONFLICT(id) DO UPDATE SET
               alive=:alive, state=:state, state_at=:state_at, last_event=:event, detail=:detail,
               tool=:tool, transcript_path=COALESCE(:transcript, transcript_path),
@@ -185,6 +209,7 @@ class DB:
                 "claude_sid": s.get("claudeSessionId") or meta["claudeSessionId"],
                 "parent_id": (meta.get("parent") or {}).get("instanceId"),
                 "parent_name": (meta.get("parent") or {}).get("name"),
+                "mcp": int(bool(meta.get("mcp"))),
                 "now": now(),
             },
         )
@@ -195,8 +220,39 @@ class DB:
             (now(), now(), session_id),
         )
 
-    def live_session_ids(self) -> list[str]:
+    def live_session_ids(self, backend: str | None = None) -> list[str]:
+        if backend:
+            return [r["id"] for r in self.q("SELECT id FROM sessions WHERE deleted_at IS NULL AND backend=?", (backend,))]
         return [r["id"] for r in self.q("SELECT id FROM sessions WHERE deleted_at IS NULL")]
+
+    # sdk 세션은 파일이 없어서 서버가 직접 씀 (ingest 는 tmux 세션만 다룸)
+
+    def insert_sdk_session(self, row: dict) -> None:
+        self.exec(
+            """
+            INSERT INTO sessions (id, name, role, tmux, cwd, claude_args, created_at, alive, state, state_at,
+                                  last_event, detail, claude_session_id, parent_id, parent_name, backend,
+                                  sdk_options, mcp, updated_at)
+            VALUES (:id, :name, :role, '', :cwd, '[]', :created_at, 0, 'starting', :created_at,
+                    'Create', NULL, :claude_session_id, :parent_id, :parent_name, 'sdk', :sdk_options, 1, :created_at)
+            """,
+            {**row, "sdk_options": json.dumps(row.get("sdk_options") or {})},
+        )
+
+    SDK_FIELDS = ("alive", "state", "state_at", "last_event", "detail", "tool", "transcript_path",
+                  "claude_session_id", "sdk_options")
+
+    def update_sdk_session(self, session_id: str, **fields: Any) -> None:
+        fields = {k: v for k, v in fields.items() if k in self.SDK_FIELDS}
+        if "alive" in fields:
+            fields["alive"] = int(bool(fields["alive"]))
+        if "sdk_options" in fields:
+            fields["sdk_options"] = json.dumps(fields["sdk_options"] or {})
+        sets = ", ".join(f"{k}=:{k}" for k in fields)
+        self.exec(f"UPDATE sessions SET {sets}, updated_at=:now WHERE id=:id", {**fields, "id": session_id, "now": now()})
+
+    def session_by_id(self, session_id: str) -> dict | None:
+        return self.one("SELECT * FROM sessions WHERE id=?", (session_id,))
 
     def sessions(self, include_deleted: bool = False) -> list[dict]:
         where = "" if include_deleted else "WHERE deleted_at IS NULL"
@@ -232,6 +288,36 @@ class DB:
                 self.conn.execute("ROLLBACK")
                 raise
 
+    def add_session_event(self, session_id: str, e: dict) -> None:
+        """sdk 세션 훅 이벤트 (tmux 세션의 events.jsonl 한 줄과 같은 모양)"""
+        self.exec(
+            "INSERT INTO session_events (session_id, at, event, tool, data) VALUES (?, ?, ?, ?, ?)",
+            (session_id, e.get("at", now()), e.get("event", "?"), e.get("tool"), json.dumps(e, default=str)),
+        )
+
+    # ---------- sdk 턴 ----------
+
+    def add_sdk_turn(self, session_id: str, t: dict) -> int:
+        return self.exec(
+            "INSERT INTO sdk_turns (session_id, origin, prompt, prompt_at) VALUES (?, ?, ?, ?)",
+            (session_id, t["origin"], t["prompt"], t["prompt_at"]),
+        )
+
+    def update_sdk_turn(self, turn_id: int, t: dict) -> None:
+        self.exec(
+            "UPDATE sdk_turns SET prompt=?, texts=?, tools=?, complete=?, interrupted=?, result=?, ended_at=? WHERE id=?",
+            (t["prompt"], json.dumps(t["texts"]), json.dumps(t["tools"]), int(t["complete"]), int(t["interrupted"]),
+             json.dumps(t.get("result")) if t.get("result") is not None else None, t.get("ended_at"), turn_id),
+        )
+
+    def sdk_turns(self, session_id: str, limit: int = 20, origin: str | None = None) -> list[dict]:
+        where, params = "session_id=?", [session_id]
+        if origin:
+            where += " AND origin=?"
+            params.append(origin)
+        rows = self.q(f"SELECT * FROM sdk_turns WHERE {where} ORDER BY id DESC LIMIT ?", (*params, limit))
+        return rows[::-1]
+
     def session_events(self, session_id: str, limit: int = 200) -> list[dict]:
         rows = self.q("SELECT * FROM session_events WHERE session_id=? ORDER BY id DESC LIMIT ?", (session_id, limit))
         return rows[::-1]
@@ -263,7 +349,8 @@ class DB:
         """살아있는 세션에 붙은 켜진 라우트 + 세션 정보"""
         return self.q(
             """
-            SELECT r.*, s.name AS session_name, s.state AS session_state, s.alive AS session_alive
+            SELECT r.*, s.name AS session_name, s.state AS session_state, s.alive AS session_alive,
+                   s.backend AS session_backend, s.mcp AS session_mcp
             FROM routes r JOIN sessions s ON s.id = r.session_id
             WHERE r.enabled = 1 AND s.deleted_at IS NULL AND s.alive = 1
             ORDER BY r.id

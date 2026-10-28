@@ -28,6 +28,9 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
   마스터는 Claude Code 내장 서브 에이전트나 워크플로 대신 tmux 세션 따로 띄워서 일 넘기기. 그래야 뭐 하는지 눈에 보이니까.
   (따로 요청하거나 워커 세션이면 내장 기능 써도 됨.)
 
+- **모델은 카디널 MCP로만**
+  서버가 떠 있으면 세션 안 모델(tmux든 SDK든)은 서버의 카디널 MCP 도구(`mcp__cardinal__*`)로만 카디널을 다룸. 워커는 답장·목록만, 마스터는 세션 만들기/보내기/기다리기까지. `cardinal` CLI는 사람이 직접 개입할 때용.
+
 - **카디널**
   tmux 셸 목록, Claude Code 세션 ID, 세션 히스토리 다 들고 있고, 세션 만들고 지우고 고칠 수 있는 본체.
 
@@ -57,6 +60,8 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [웹 터미널은 어떻게 도는가](docs/web-terminal.md) ([English](docs/web-terminal.en.md))
 - [카디널 서버: DB, 메시지 채널](docs/server.md) ([English](docs/server.en.md))
 - [웹 UI](docs/web-ui.md) ([English](docs/web-ui.en.md))
+- [SDK 모드: tmux 없이 서버 안 Agent SDK 세션](docs/sdk-mode.md) ([English](docs/sdk-mode.en.md))
+- [카디널 MCP: 세션 안 모델이 카디널을 다루는 길](docs/mcp.md) ([English](docs/mcp.en.md))
 
 ## 할 일
 
@@ -71,6 +76,9 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [x] 세션별 `send` 직렬화 (세션 락 + idle 대기 → 메시지 하나 = 턴 하나)
 - [x] 상태 판정 보강 (Esc 중단 = 사람 개입, 백그라운드 알림 턴 구분, 사람 입력만 턴으로 보기)
 - [x] 서버 시작 전 중복 실행/포트 확인
+- [x] SDK 모드: tmux 없이 서버 안 Claude Agent SDK 세션 (생성/재시작/중단, 질문 답하기, MCP, 실시간 웹소켓, 같은 채널)
+- [x] SDK 모드 웹 UI (대화 실시간, 질문/권한 답하기, MCP 상태, 설정·다시 시작)
+- [x] 카디널 MCP: 서버 안 MCP 하나를 tmux·SDK 세션이 같이 씀 (역할별 도구, 세션 키, 서버 재시작 때 다시 붙이기)
 - [ ] 디스코드 실제 봇으로 돌려보기
 - [ ] 카디널 캐릭터성
 
@@ -112,6 +120,7 @@ cardinal report w1                               # 살아있나? 작업중/완�
 cardinal last w1                                 # 마지막 턴 응답 텍스트만
 cardinal attach w1                               # tmux로 직접 붙기
 cardinal kill w1 --purge
+cardinal revive w1                               # tmux 가 없어진 세션(재부팅 등)을 같은 세션·같은 대화로 (서버는 뜰 때 알아서 --all)
 ```
 
 작업 폴더는 기본이 고정 워크스페이스 `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`), `--cwd`로 세션마다 바꿀 수 있음.
@@ -121,6 +130,8 @@ cardinal kill w1 --purge
 기록: `~/.cardinal/sessions/<이름>/meta.json` (이름 ↔ 세션 고유 키) + `~/.cardinal/hooks/<고유 키>/` (훅 전용 폴더: `state.json`, `events.jsonl`).
 
 처음 쓰는 작업 폴더는 신뢰 다이얼로그가 뜸 → `--trust`로 만들거나 `cardinal keys <이름> Down Enter`. 다이얼로그에 걸려 있으면 `send`/`wait`가 바로 알려줌.
+
+카디널 서버가 떠 있으면 `new`가 세션에 카디널 MCP를 붙이고 모델은 그것만 씀 (`--no-mcp`면 안 붙이고 모델도 CLI를 씀). 서버가 다시 뜨면 살아있는 세션에 서버가 알아서 `cardinal mcp-reconnect`. 자세한 건 [docs/mcp.md](docs/mcp.md).
 
 ### 서버 (웹, DB, 메시지 채널)
 
@@ -134,11 +145,13 @@ CARDINAL_TOKEN=xxx uv run cardinal-server  # 토큰 걸기 (?token=xxx 또는 Be
 - 웹 UI (아래), 세션 생성할 때 채널 라우트 (채널명 + 트리거) 붙이기
 - 세션 기록은 `~/.cardinal/cardinal.db` (SQLite)에 쌓임. purge해도 DB엔 남음
 - 상태 확인: `GET /api/health` (디스코드 연결 상태 포함)
-- 라우트에 맞는 디스코드 메시지 → 세션에 전달 → 세션 안 에이전트가 답장:
+- 라우트에 맞는 디스코드 메시지 → 세션에 전달 → 세션 안 에이전트가 `mcp__cardinal__reply` 도구로 답장 (서버 없이 띄운 세션이나 사람은 CLI로):
 
 ```sh
 cardinal reply evt_71363e3e "답장" --file result.png
 ```
+- 세션 안 모델은 `/mcp/worker`, `/mcp/master`(카디널 MCP)로 카디널을 다룸 → [docs/mcp.md](docs/mcp.md)
+- 웹드라이브: 사람과 세션이 같이 쓰는 파일 공간 (`~/.cardinal/drive`, 세션마다 `/sessions/<이름>`, 공용 `/shared`). 웹에서 올리고 받고 고치고, 세션은 `drive_*` MCP 도구로 같은 CRUD, 요청에 파일 붙이기 → [docs/drive.md](docs/drive.md)
 
 API랑 채널 자세한 건 [docs/server.md](docs/server.md).
 
@@ -149,5 +162,16 @@ cd web && pnpm install && pnpm build   # → web/dist, 카디널 서버가 / 에
 pnpm dev                               # 개발: http://localhost:5173, /api·/ws 는 7878 서버로 프록시
 ```
 
-세션 목록(실시간) · 새 세션(작업 폴더, 신뢰 자동 수락, 라우트) · 세션별 터미널 / 메시지·키 보내기 / 결과 / 훅 이벤트 / 라우트 · 채널 이벤트→전달→답장 흐름과 local 메시지 넣기 · 디스코드 연결 상태.
-주소 해시로 화면을 고를 수 있음: `/#s=<세션 이름>`, `/#channel`. 자세한 건 [docs/web-ui.md](docs/web-ui.md).
+세션 목록(실시간) · 새 세션(tmux / SDK, 작업 폴더, 신뢰 자동 수락, SDK 옵션, 라우트) · 세션별 터미널 / 메시지·키 보내기 / 결과 / 훅 이벤트 / 라우트 · SDK 세션은 대화(실시간, 질문·권한 답하기) / MCP / 설정 · 채널 이벤트→전달→답장 흐름과 local 메시지 넣기 · 디스코드 연결 상태.
+· 드라이브(파일 올리기·받기·편집, 세션 폴더 탭, 요청에 파일 첨부).
+주소 해시로 화면을 고를 수 있음: `/#s=<세션 이름>`, `/#channel`, `/#drive`. 자세한 건 [docs/web-ui.md](docs/web-ui.md).
+
+### SDK 모드 (tmux 없이)
+
+```sh
+cd server && uv run cardinal-server --sdk    # 또는 ./launch.sh --sdk
+```
+
+세션을 tmux + TUI 대신 **서버 안 Claude Agent SDK**로 돌림. 음성/모션 같은 프로그램이 붙기 좋게 REST + `/ws/sdk/<이름>` 실시간 웹소켓으로만 다룸 (CLI 없음).
+생성·재시작(대화 이어서)·중단, 질문(AskUserQuestion)에 API로 답하기, 외부 MCP 서버 연결/상태, 모델·권한 모드 바꾸기, 토큰 스트리밍. 기본 권한 모드는 auto.
+채널(디스코드, local)·라우트·자동 답장은 tmux 세션과 같은 걸 씀. 답장은 `mcp__cardinal__reply` 도구. 웹 UI에서도 만들고, 대화하고, 질문에 답하고, MCP·옵션 바꿔서 다시 시작할 수 있음. 자세한 건 [docs/sdk-mode.md](docs/sdk-mode.md).

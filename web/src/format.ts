@@ -24,6 +24,14 @@ export const unwrapPasted = (s: string) => s.replace(/<\/?pasted_content[^>]*>/g
 
 export const basename = (p: string) => p.split('/').filter(Boolean).pop() ?? p;
 
+export function fmtSize(n: number | null | undefined): string {
+  if (n == null) return '';
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)}KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)}MB`;
+  return `${(n / 1024 ** 3).toFixed(2)}GB`;
+}
+
 // 세션 상태를 사람이 읽는 말로. Esc 중단은 DB 에선 idle + last_event Interrupted
 export function stateLabel(s: Session): { label: string; tone: 'ok' | 'busy' | 'warn' | 'muted' | 'info' } {
   if (s.deleted_at) return { label: '삭제됨', tone: 'muted' };
@@ -34,7 +42,8 @@ export function stateLabel(s: Session): { label: string; tone: 'ok' | 'busy' | '
     case 'busy':
       return { label: s.tool ? `작업 중 · ${s.tool}` : '작업 중', tone: 'busy' };
     case 'waiting':
-      return { label: '승인 대기', tone: 'warn' };
+      // sdk 는 질문(AskUserQuestion)도 여기. 화면 다이얼로그가 아니라 API 로 답함
+      return { label: s.backend === 'sdk' ? '답 대기' : '승인 대기', tone: 'warn' };
     case 'starting':
       return { label: '준비 중', tone: 'info' };
     default:
