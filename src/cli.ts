@@ -26,6 +26,9 @@ const HELP = `cardinal — tmux + Claude Code 세션 제어
   cardinal last <name>                       마지막 턴 응답 텍스트만
   cardinal attach <name>                     tmux에 직접 붙기
   cardinal kill <name> [--purge]             세션 종료 (--purge 면 기록도 삭제)
+  cardinal revive <name> | --all [--json]    tmux 가 없어진 세션(재부팅 등)을 같은 세션(이름·기록·MCP 키)과 같은 claude 대화 ID 로
+                                             다시 띄움 (대화 기록이 있으면 --resume). --all: kill 로 끝낸 것 빼고 죽은 세션 전부.
+                                             카디널 서버는 뜰 때 알아서 --all 을 부름
   cardinal reply <event-id> <text|-> [--file PATH]...
                                              외부 채널 이벤트에 답장 (카디널 서버 필요). 파일은 최대 10개, 각 10MB
 
@@ -131,6 +134,7 @@ async function main() {
       json: { type: 'boolean' },
       lines: { type: 'string' },
       purge: { type: 'boolean' },
+      all: { type: 'boolean' },
       file: { type: 'string', multiple: true },
     },
   });
@@ -256,6 +260,26 @@ async function main() {
       await session.kill(need(), o.purge);
       if (o.json) console.log(JSON.stringify({ ok: true }));
       break;
+    case 'revive': {
+      if (!o.all) {
+        const r = await session.reviveSession(need());
+        console.log(o.json ? JSON.stringify(r) : `${r.name}: 다시 띄움 (${r.resumed ? '대화 이어서' : '새 대화'}, claude ${r.claudeSessionId})`);
+        break;
+      }
+      // 하나가 실패해도 나머지는 계속
+      const out: (session.ReviveResult | { name: string; error: string })[] = [];
+      for (const name of await session.revivable()) {
+        try {
+          out.push(await session.reviveSession(name));
+        } catch (e: any) {
+          out.push({ name, error: e?.message ?? String(e) });
+        }
+      }
+      if (o.json) console.log(JSON.stringify(out));
+      else if (!out.length) console.log('(되살릴 세션 없음)');
+      else for (const r of out) console.log('error' in r ? `${r.name}: 실패 — ${r.error}` : `${r.name}: 다시 띄움 (${r.resumed ? '대화 이어서' : '새 대화'})`);
+      break;
+    }
     case 'reply': {
       const eventId = need('<event-id>');
       const text = p[1] === '-' ? await readStdin() : p.slice(1).join(' ');

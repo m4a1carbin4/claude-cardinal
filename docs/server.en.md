@@ -112,6 +112,8 @@ lifespan start
  ── serving ── (in the background once requests are accepted)
     · restart resume_on_start SDK sessions (now, because they must connect to the Cardinal MCP)
     · `cardinal mcp-reconnect` for each live tmux MCP session (claude doesn't reattach a dropped MCP by itself)
+    · `cardinal revive --all` for sessions whose tmux is gone (reboot etc.): same session + same claude conversation, skipping ones ended with kill
+      (off with `CARDINAL_TMUX_REVIVE=0`, [session system](session-system.en.md#revive))
 lifespan end (open requests get at most 5s: timeout_graceful_shutdown)
  6. delete server.json if its pid is ours (don't delete if another server overwrote it)
  7. cancel the ingest task, close the Discord connection

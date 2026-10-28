@@ -112,6 +112,8 @@ lifespan 시작
  ── 서비스 중 ── (요청을 받기 시작하면 백그라운드로)
     · resume_on_start SDK 세션 다시 띄우기 (카디널 MCP 에 붙어야 해서 이때)
     · 살아있는 tmux MCP 세션마다 `cardinal mcp-reconnect` (claude 는 끊긴 MCP 를 스스로 안 붙음)
+    · tmux 가 없어진 세션(재부팅 등) `cardinal revive --all`: 같은 세션·같은 claude 대화로 다시 띄움, kill 로 끝낸 건 빼고
+      (`CARDINAL_TMUX_REVIVE=0`이면 안 함, [세션 시스템](session-system.md#revive-되살리기))
 lifespan 종료 (열린 요청은 최대 5초 기다림: timeout_graceful_shutdown)
  6. server.json의 pid가 자기면 삭제 (다른 서버가 덮어썼으면 안 지움)
  7. ingest 태스크 취소, 디스코드 연결 닫기

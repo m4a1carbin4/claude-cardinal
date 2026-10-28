@@ -285,8 +285,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     local = LocalAdapter(channel_hub.publish)
     router.add_adapter(local)
 
-    async def reconnect_tmux_mcp() -> None:
-        rows = [r for r in db.sessions() if r["backend"] == "tmux" and r["alive"] and r.get("mcp")]
+    async def reconnect_tmux_mcp(rows: list[dict]) -> None:
         if not rows:
             return
         await sdk_mgr.wait_serving()
@@ -300,6 +299,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 log.warning("카디널 MCP 다시 붙이기 실패: %s (%s)", name, e)
 
         await asyncio.gather(*(one(r["name"]) for r in rows))
+
+    async def revive_tmux() -> None:
+        """재부팅 등으로 tmux 가 없어진 세션을 같은 세션·같은 claude 대화로 다시 띄움 (cardinal kill 로 끝낸 건 빼고).
+        카디널 MCP 를 붙여야 해서 서버가 요청을 받기 시작한 뒤에"""
+        if os.environ.get("CARDINAL_TMUX_REVIVE", "1") in ("0", "false"):
+            return
+        await sdk_mgr.wait_serving()
+        try:
+            out = await cli.json("revive", "--all", timeout=300, env={"CARDINAL_SERVER_URL": settings.url})
+        except (CliError, ValueError) as e:
+            log.warning("tmux 세션 되살리기 실패: %s", e)
+            return
+        for r in out:
+            if "error" in r:
+                log.warning("tmux 세션 되살리기 실패: %s (%s)", r["name"], r["error"])
+            else:
+                log.info("tmux 세션 되살림: %s (%s)", r["name"], "대화 이어서" if r["resumed"] else "새 대화")
+        if out:
+            await ingestor.sync()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -315,8 +333,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await mcp_ctx.__aenter__()
         # resume_on_start 세션은 서버가 요청을 받기 시작한 뒤에 띄움 (카디널 MCP 에 붙어야 해서)
         resume_task = asyncio.create_task(sdk_mgr.resume_when_serving())
-        # 살아있는 tmux 세션의 claude 는 서버가 꺼질 때 끊긴 카디널 MCP 를 스스로 안 붙음 → 하나씩 /mcp reconnect
-        reconnect_task = asyncio.create_task(reconnect_tmux_mcp())
+        # 살아있는 tmux 세션의 claude 는 서버가 꺼질 때 끊긴 카디널 MCP 를 스스로 안 붙음 → 하나씩 /mcp reconnect.
+        # 대상은 지금 살아있는 것만 (아래에서 되살리는 세션은 새로 붙으니까 빼야 함)
+        reconnect_task = asyncio.create_task(reconnect_tmux_mcp(
+            [r for r in db.sessions() if r["backend"] == "tmux" and r["alive"] and r.get("mcp")]))
+        revive_task = asyncio.create_task(revive_tmux())
         await local.start(router.handle)
         discord = None
         app.state.discord = None
@@ -346,6 +367,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ingest_task.cancel()
             resume_task.cancel()
             reconnect_task.cancel()
+            revive_task.cancel()
             await sdk_mgr.shutdown()
             await mcp_ctx.__aexit__(None, None, None)
             if discord:
@@ -513,8 +535,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/sessions/{name}/restart", dependencies=api)
     async def sdk_restart(name: str, body: RestartIn | None = None):
-        """끝난/살아있는 SDK 세션 다시 띄우기. 기본은 마지막 대화를 이어서 (resume)"""
+        """끝난/살아있는 SDK 세션 다시 띄우기. 기본은 마지막 대화를 이어서 (resume).
+        tmux 세션은 tmux 가 없어진 것만: 같은 세션·같은 claude 대화로 (cardinal revive)"""
         body = body or RestartIn()
+        if session_or_404(name)["backend"] == "tmux":
+            if body.sdk:
+                raise HTTPException(400, "tmux 세션엔 sdk 옵션이 없음")
+            try:
+                await cli.run("revive", name, timeout=120, env={"CARDINAL_SERVER_URL": settings.url})
+            except CliError as e:
+                raise cli_call(e)
+            await ingestor.sync()
+            return pub(db.session_by_name(name))
         sess = sdk_or_400(name)
         if not settings.sdk:
             raise HTTPException(400, "SDK 모드가 꺼져 있음 (cardinal-server --sdk)")

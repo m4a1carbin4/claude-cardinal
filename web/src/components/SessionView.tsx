@@ -128,7 +128,7 @@ export function SessionView({ session, version, onGone }: { session: Session; ve
               {session.mcp ? (
                 <>
                   카디널 MCP <code>mcp__cardinal__*</code>{' '}
-                  <span className="muted small">({session.role === 'master' ? '마스터: 세션 만들기·보내기·기다리기 등 전부' : '워커: reply, session_list'})</span>
+                  <span className="muted small">({session.role === 'master' ? '마스터: 세션 만들기·보내기·기다리기 등 전부' : '워커: reply, 드라이브, 있는 워커 부르기'})</span>
                 </>
               ) : (
                 <>
@@ -208,6 +208,11 @@ export function SessionView({ session, version, onGone }: { session: Session; ve
                 다시 시작
               </button>
             </>
+          )}
+          {!sdk && !session.alive && (
+            <button className="ghost small" onClick={() => restart(true).catch(() => {})} title="tmux 를 다시 띄우고 같은 claude 대화를 이어감 (cardinal revive)">
+              다시 시작
+            </button>
           )}
           <button className="ghost small" onClick={() => kill(false)} disabled={!session.alive}>
             종료

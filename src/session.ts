@@ -241,20 +241,6 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
   const claudeSessionId = randomUUID();
   const claudeArgs = opts.claudeArgs ?? [];
   const mcp = opts.noMcp ? undefined : await mcpAttach(instanceId, role);
-  const systemPrompt = mcp
-    ? MCP_COMMON_PROMPT(name, role) + (role === 'master' ? MCP_MASTER_PROMPT : MCP_WORKER_PROMPT)
-    : COMMON_PROMPT(name, role) + (role === 'master' ? MASTER_PROMPT : '');
-  const argv = [
-    'claude',
-    // 둘 다 값을 여러 개 받는 옵션이라 다음 인자가 -- 로 시작하는 자리에 둠 (끝에 두면 첫 지시를 값으로 먹음)
-    ...(mcp ? ['--mcp-config', JSON.stringify(mcp), '--allowedTools', 'mcp__cardinal'] : []),
-    '--session-id', claudeSessionId,
-    '--name', name,
-    '--settings', JSON.stringify(hookSettings(hdir)),
-    '--append-system-prompt', systemPrompt,
-    ...claudeArgs,
-    ...(opts.prompt ? [opts.prompt] : []),
-  ];
 
   const meta: SessionMeta = {
     name,
@@ -275,10 +261,38 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
   writeMeta(meta);
 
   try {
+    await launch(meta, mcp, ['--session-id', claudeSessionId], opts.prompt);
+  } catch (e) {
+    // 안 뜬 인스턴스를 가리키는 meta/훅 폴더가 남지 않게 롤백
+    removeSession(name);
+    throw e;
+  }
+  if (opts.trust) await acceptTrust(name, t);
+  return meta;
+}
+
+// tmux 안에 claude 띄우기 (새로 만들기 / 되살리기 공통). session: ['--session-id', id] 또는 ['--resume', id]
+async function launch(meta: SessionMeta, mcp: object | undefined, session: string[], prompt?: string): Promise<void> {
+  const { name, role, instanceId } = meta;
+  const systemPrompt = mcp
+    ? MCP_COMMON_PROMPT(name, role) + (role === 'master' ? MCP_MASTER_PROMPT : MCP_WORKER_PROMPT)
+    : COMMON_PROMPT(name, role) + (role === 'master' ? MASTER_PROMPT : '');
+  const argv = [
+    'claude',
+    // 둘 다 값을 여러 개 받는 옵션이라 다음 인자가 -- 로 시작하는 자리에 둠 (끝에 두면 첫 지시를 값으로 먹음)
+    ...(mcp ? ['--mcp-config', JSON.stringify(mcp), '--allowedTools', 'mcp__cardinal'] : []),
+    ...session,
+    '--name', name,
+    '--settings', JSON.stringify(hookSettings(hookDir(instanceId!))),
+    '--append-system-prompt', systemPrompt,
+    ...meta.claudeArgs,
+    ...(prompt ? [prompt] : []),
+  ];
+  try {
     await tmux.tmux(
       'new-session', '-d',
-      '-s', t,
-      '-c', cwd,
+      '-s', meta.tmux,
+      '-c', meta.cwd,
       '-x', '200', '-y', '50',
       // 환경변수는 new-session -e 대신 env 로 넣음 (-e 는 tmux 3.2+ 에만 있음).
       // 명령도 셸 문자열 하나로: 인자 여러 개를 그대로 실행하는 건 tmux 3.0+ 라서
@@ -295,16 +309,61 @@ async function createLocked(opts: CreateOptions): Promise<SessionMeta> {
       ]),
     );
   } catch (e: any) {
-    // 안 뜬 인스턴스를 가리키는 meta/훅 폴더가 남지 않게 롤백
-    removeSession(name);
     const reason = String(e?.stderr ?? '').trim() || e?.message?.split('\n')[0] || String(e);
     throw new Error(`tmux 세션 생성 실패: ${reason}`);
   }
   // 웹/터미널 여러 군데서 붙어도 가장 최근에 만진 클라이언트 크기 따라가게
-  await tmux.setOption(t, 'window-size', 'latest').catch(() => {});
-  if (opts.trust) await acceptTrust(name, t);
+  await tmux.setOption(meta.tmux, 'window-size', 'latest').catch(() => {});
+}
 
-  return meta;
+// ---------- 되살리기 ----------
+
+export interface ReviveResult {
+  name: string;
+  claudeSessionId: string;
+  resumed: boolean; // 대화 기록이 있어서 --resume 으로 이어감 (false 면 같은 ID 로 새 대화)
+  mcp: boolean;
+}
+
+// tmux 가 없어진(재부팅, tmux 서버 종료 등) 세션을 같은 인스턴스(이름·훅 폴더·카디널 MCP 키·DB 기록)와
+// 같은 claude 대화 ID 로 다시 띄움. cardinal kill 로 끝낸 세션은 안 살림 (사람이 끝낸 것)
+export async function reviveSession(name: string): Promise<ReviveResult> {
+  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+  return withLock(path.join(SESSIONS_DIR, `.create-${name}.lock`), CREATE_LOCK_TIMEOUT_MS, () => reviveLocked(name));
+}
+
+async function reviveLocked(name: string): Promise<ReviveResult> {
+  const meta = readMeta(name);
+  if (!meta) throw new Error(`모르는 세션: ${name}`);
+  if (!meta.instanceId) throw new Error(`예전 방식 세션이라 못 살림: ${name}`);
+  if (await tmux.hasSession(meta.tmux)) throw new Error(`이미 살아있음: ${name}`);
+  if (!fs.statSync(meta.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`작업 폴더가 없음: ${meta.cwd}`);
+  const hdir = hookDir(meta.instanceId);
+  const prev = readState(hdir);
+  // /clear 하면 claude 쪽 ID 가 바뀜 → 훅이 마지막으로 본 ID 가 지금 대화
+  const claudeSessionId = prev?.claudeSessionId ?? meta.claudeSessionId;
+  // 첫 메시지 전에 죽었으면 트랜스크립트가 없음 → --resume 은 실패하니 같은 ID 로 새로
+  const resumed = fs.existsSync(transcriptPath(meta.cwd, claudeSessionId));
+  // 카디널 MCP 는 지금 서버 기준으로 다시 (서버 주소가 바뀌었을 수도, 서버 없이 살리면 CLI 방식)
+  const mcp = await mcpAttach(meta.instanceId, meta.role);
+  const now = new Date().toISOString();
+  fs.mkdirSync(hdir, { recursive: true });
+  writeState(hdir, { state: 'starting', at: now, event: 'Revive', claudeSessionId });
+  // 직접 살리면 kill 표시도 지움 (다음 서버 시작 때도 되살아나게)
+  const { killedAt: _killed, ...rest } = meta;
+  writeMeta({ ...rest, mcp: !!mcp, revivedAt: now });
+  await launch({ ...meta, mcp: !!mcp }, mcp, [resumed ? '--resume' : '--session-id', claudeSessionId]);
+  // 전에 이 폴더를 이미 신뢰했으니 다이얼로그가 뜨면 넘김
+  await acceptTrust(name, meta.tmux);
+  return { name, claudeSessionId, resumed, mcp: !!mcp };
+}
+
+// 되살릴 대상: 기록은 있는데 tmux 가 없고, cardinal kill 로 끝낸 게 아닌 세션
+export async function revivable(): Promise<string[]> {
+  return (await listStatus())
+    // event 'Kill' 은 killedAt 이 생기기 전에 kill 된 세션 (그때도 훅이 안 덮었으면 남아 있음)
+    .filter((s) => !s.alive && s.instanceId && !s.killedAt && s.event !== 'Kill')
+    .map((s) => s.name);
 }
 
 // ---------- 조회 ----------
@@ -648,8 +707,13 @@ export async function wait(name: string, opts: WaitOptions = {}): Promise<Sessio
 export async function kill(name: string, purge = false): Promise<void> {
   const meta = readMeta(name);
   if (!meta) throw new Error(`모르는 세션: ${name}`);
+  if (purge) {
+    if (await tmux.hasSession(meta.tmux)) await tmux.killSession(meta.tmux);
+    return removeSession(name);
+  }
+  // tmux 를 죽이기 전에 표시 (죽는 claude 의 SessionEnd 훅보다 먼저, 훅이 못 건드리는 meta 에)
+  writeMeta({ ...meta, killedAt: new Date().toISOString() });
   if (await tmux.hasSession(meta.tmux)) await tmux.killSession(meta.tmux);
-  if (purge) return removeSession(name);
   const dir = stateDir(meta);
   if (fs.existsSync(dir)) writeState(dir, { ...(readState(dir) ?? {}), state: 'ended', at: new Date().toISOString(), event: 'Kill' });
 }

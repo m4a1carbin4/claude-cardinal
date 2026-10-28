@@ -120,6 +120,7 @@ cardinal report w1                               # 살아있나? 작업중/완�
 cardinal last w1                                 # 마지막 턴 응답 텍스트만
 cardinal attach w1                               # tmux로 직접 붙기
 cardinal kill w1 --purge
+cardinal revive w1                               # tmux 가 없어진 세션(재부팅 등)을 같은 세션·같은 대화로 (서버는 뜰 때 알아서 --all)
 ```
 
 작업 폴더는 기본이 고정 워크스페이스 `$CARDINAL_WORKSPACE` (기본 `~/.cardinal/workspace`), `--cwd`로 세션마다 바꿀 수 있음.

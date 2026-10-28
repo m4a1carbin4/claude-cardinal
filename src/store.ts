@@ -23,6 +23,9 @@ export interface SessionMeta {
   createdAt: string;
   parent?: { name: string; instanceId: string }; // 이 세션을 만든 카디널 세션 (마스터가 워커를 띄운 경우)
   mcp?: boolean; // 카디널 MCP(서버)에 붙여 띄움. 아니면 서버 없이 띄운 것 → 모델이 CLI 를 씀
+  revivedAt?: string; // tmux 가 없어진 뒤 cardinal revive 로 다시 띄운 때 (마지막)
+  // cardinal kill 로 끝낸 때. 서버가 뜰 때 되살리지 않는 표시 (state.json 은 죽어가는 claude 의 SessionEnd 훅이 덮어써서 여기 둠)
+  killedAt?: string;
 }
 
 // 훅이 계속 덮어씀 (claude 쪽 소유)

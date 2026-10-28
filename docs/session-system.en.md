@@ -243,6 +243,22 @@ assistant  text          ← final answer (stop_reason: end_turn)
 Reporting mid-turn gives the partial reply so far, marked as still in progress. Transcripts outlive the session, so dead sessions can be reported too.
 `last` prints just the last turn's text from the same parse. `send --wait` uses the same parser to pick its own turn.
 
+### revive
+
+When the tmux session disappears (reboot, tmux server exit), claude ends with it (`SessionEnd`). The records (meta, hook folder) are still there, so the same session is brought back:
+
+- **Same session**: same name, instance key (hook folder), working folder, claude args and role. So the DB record, routes, web drive folder and Cardinal MCP key carry over
+- **Same claude conversation ID**: the last ID the hooks saw (the new one after `/clear`). If the transcript exists, `claude --resume <ID>` continues the conversation. If it died before the first message (no transcript), it starts fresh with `--session-id <same ID>`
+- The Cardinal MCP is reattached against the server that's up now (CLI mode if revived without a server). The prompt is the current version too (new rules if they changed)
+- A folder trust dialog gets accepted (the folder was trusted before)
+- Uses the same lock as creating that name
+
+**`--all` doesn't revive sessions ended with `cardinal kill`** (a human ended them). The kill mark lives in `meta.json` as `killedAt`: writing `Kill` into `state.json` gets overwritten by the dying claude's late `SessionEnd` hook (measured). Older killed sessions are skipped too if their state event is still `Kill`. `cardinal revive <name>` by name revives even a killed one and clears the mark.
+
+**The Cardinal server runs `cardinal revive --all` on startup** (after it starts serving, since the Cardinal MCP has to attach). So with the server auto-started by launchd ([autostart.sh](../autostart.sh)), sessions come back with their conversations after a reboot + login. Turn off with `CARDINAL_TMUX_REVIVE=0`. The web UI's "다시 시작" (restart) button on a tmux session / `POST /api/sessions/<name>/restart` do the same.
+
+A tmux server started under launchd detaches (parent PID 1, its own process group), so it survives server restarts (checked).
+
 ## CLI
 
 ```
@@ -258,6 +274,7 @@ cardinal report <name> [--tools] [--json]
 cardinal last <name>
 cardinal attach <name>
 cardinal kill <name> [--purge]
+cardinal revive <name> | --all [--json]     # bring back sessions whose tmux is gone, same session + same claude conversation (server runs --all on startup)
 cardinal reply <event id> <text|-> [--file path]...
 ```
 

@@ -243,6 +243,22 @@ assistant  text          ← 마지막 답 (stop_reason: end_turn)
 작업 중일 때 report 하면 지금까지 쓴 부분 응답이 나오고 "아직 진행 중" 표시가 붙음. 세션이 죽은 뒤에도 트랜스크립트는 남아 있어서 report 됨.
 `last`는 같은 파싱 결과에서 마지막 턴 텍스트만 출력함. `send --wait`는 같은 파서로 자기가 만든 턴을 골라 출력함.
 
+### revive (되살리기)
+
+재부팅이나 tmux 서버 종료로 tmux 가 없어지면 claude 도 같이 끝남 (`SessionEnd`). 기록(meta, 훅 폴더)은 남아 있으니 같은 세션으로 다시 띄움:
+
+- **같은 세션**: 이름, 세션 고유 키(훅 폴더), 작업 폴더, claude 인자, 역할이 그대로. 그래서 DB 기록, 라우트, 웹드라이브 폴더, 카디널 MCP 키가 이어짐
+- **같은 claude 대화 ID**: 훅이 마지막으로 본 ID (`/clear` 했으면 바뀐 쪽). 트랜스크립트가 있으면 `claude --resume <ID>`로 대화를 이어감. 첫 메시지 전에 죽어서 트랜스크립트가 없으면 `--session-id <같은 ID>`로 새로
+- 카디널 MCP 는 지금 떠 있는 서버 기준으로 다시 붙임 (서버 없이 살리면 CLI 방식). 프롬프트도 지금 버전으로 (규칙이 바뀌었으면 새 규칙)
+- 작업 폴더 신뢰 다이얼로그가 뜨면 넘김 (전에 이미 신뢰한 폴더)
+- 같은 이름 만들기와 같은 락을 씀
+
+**`cardinal kill` 로 끝낸 세션은 `--all` 이 안 살림** (사람이 끝낸 것). kill 표시는 `meta.json` 의 `killedAt`에 둠: `state.json`에 `Kill`을 써도 죽어가는 claude 의 `SessionEnd` 훅이 늦게 와서 덮어씀 (실측). 예전에 kill 된 세션은 상태 이벤트가 `Kill`로 남아 있으면 그것도 빼줌. 이름을 찍어 직접 `cardinal revive <이름>` 하면 kill 된 것도 살리고 표시를 지움.
+
+**카디널 서버가 뜰 때 알아서 `cardinal revive --all`** (요청을 받기 시작한 뒤, 카디널 MCP 를 붙여야 해서). 그래서 launchd 로 서버를 자동 실행하면([autostart.sh](../autostart.sh)) 재부팅 뒤 로그인하면 세션이 대화째 돌아옴. 끄려면 `CARDINAL_TMUX_REVIVE=0`. 웹 UI 의 tmux 세션 "다시 시작" 버튼 / `POST /api/sessions/<이름>/restart`도 같은 것.
+
+launchd 아래에서 띄운 tmux 서버는 따로 떨어져 나가서(부모 PID 1, 자기 프로세스 그룹) 서버를 다시 시작해도 안 죽음 (확인).
+
 ## CLI
 
 ```
@@ -258,10 +274,11 @@ cardinal report <이름> [--tools] [--json]
 cardinal last <이름>
 cardinal attach <이름>
 cardinal kill <이름> [--purge]
+cardinal revive <이름> | --all [--json]     # tmux 가 없어진 세션을 같은 세션·같은 claude 대화로 (서버가 뜰 때 --all)
 cardinal reply <이벤트ID> <텍스트|-> [--file 경로]...
 ```
 
-`new`/`send`/`kill`은 `--json` 주면 결과를 JSON으로 (서버가 이걸 씀).
+`new`/`send`/`kill`/`revive`는 `--json` 주면 결과를 JSON으로 (서버가 이걸 씀).
 
 ## 서버
 
