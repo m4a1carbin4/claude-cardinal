@@ -26,7 +26,7 @@ usage() {
   -p, --port PORT        웹 UI 포트 (기본 5173)
       --server-port PORT 내부 카디널 서버 포트 (기본 7878 또는 CARDINAL_PORT). 서버는 항상 127.0.0.1
       --dev              웹 UI 를 개발 모드(vite dev)로
-      --rebuild          CLI 와 웹 UI 를 다시 빌드하고 시작
+      --rebuild          CLI 와 웹 UI 를 무조건 다시 빌드하고 시작 (안 줘도 소스가 바뀌었으면 빌드함)
       --sdk              서버를 SDK 모드로 (세션을 tmux 대신 서버 안 Claude Agent SDK 로, docs/sdk-mode.md)
   -h, --help             이 도움말
 
@@ -62,23 +62,38 @@ for cmd in node pnpm uv curl; do
   command -v "$cmd" >/dev/null || { echo "launch.sh: $cmd 이 없음" >&2; exit 1; }
 done
 
-# ---------- 빌드 (없을 때만, --rebuild 면 항상) ----------
+# ---------- 빌드 (없거나 소스가 빌드보다 새로우면, --rebuild 면 항상) ----------
 
-if [[ ! -d "$ROOT/node_modules" ]]; then
+# stale <결과 파일> <소스…>: 결과가 없거나 소스 중 하나라도 더 새로우면 참
+stale() {
+  local out="$1"; shift
+  [[ ! -e "$out" ]] && return 0
+  [[ -n "$(find "$@" -newer "$out" -print -quit 2>/dev/null)" ]]
+}
+
+# build <이름> <폴더> <결과 파일>: 결과가 이미 있으면 빌드가 실패해도 예전 빌드로 계속 (launchd 가 재시작만 반복하지 않게)
+build() {
+  echo "▸ $1 빌드"
+  (cd "$2" && pnpm build) && return 0
+  [[ -e "$3" ]] || { echo "launch.sh: $1 빌드 실패" >&2; exit 1; }
+  echo "⚠ $1 빌드 실패 → 예전 빌드로 시작 (고친 뒤 다시 실행하면 다시 빌드)" >&2
+}
+
+# 의존성: 없거나 package.json·lockfile 이 바뀌었으면 (git pull 로 의존성이 늘었을 때)
+if stale "$ROOT/node_modules/.modules.yaml" "$ROOT/package.json" "$ROOT/pnpm-lock.yaml"; then
   echo "▸ CLI 의존성 설치"
   (cd "$ROOT" && pnpm install --frozen-lockfile)
 fi
-if [[ $REBUILD == 1 || ! -f "$ROOT/dist/cli.js" ]]; then
-  echo "▸ CLI 빌드"
-  (cd "$ROOT" && pnpm build)
+if [[ $REBUILD == 1 ]] || stale "$ROOT/dist/cli.js" "$ROOT/src" "$ROOT/package.json" "$ROOT/tsconfig.json"; then
+  build CLI "$ROOT" "$ROOT/dist/cli.js"
 fi
-if [[ ! -d "$ROOT/web/node_modules" ]]; then
+if stale "$ROOT/web/node_modules/.modules.yaml" "$ROOT/web/package.json" "$ROOT/web/pnpm-lock.yaml"; then
   echo "▸ 웹 UI 의존성 설치"
   (cd "$ROOT/web" && pnpm install --frozen-lockfile)
 fi
-if [[ $MODE == preview && ( $REBUILD == 1 || ! -f "$ROOT/web/dist/index.html" ) ]]; then
-  echo "▸ 웹 UI 빌드"
-  (cd "$ROOT/web" && pnpm build)
+if [[ $MODE == preview ]] && { [[ $REBUILD == 1 ]] || stale "$ROOT/web/dist/index.html" \
+  "$ROOT/web/src" "$ROOT/web/public" "$ROOT/web/index.html" "$ROOT/web/vite.config.ts" "$ROOT/web/tsconfig.json" "$ROOT/web/package.json"; }; then
+  build "웹 UI" "$ROOT/web" "$ROOT/web/dist/index.html"
 fi
 
 # ---------- 카디널 서버 ----------
