@@ -93,7 +93,7 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 ./launch.sh --host 0.0.0.0 -p 8080   # 웹 UI 주소/포트 (밖에 열 땐 CARDINAL_TOKEN 권장)
 ```
 
-`launch.sh`는 서버를 127.0.0.1 에만 띄우고 웹 UI(vite)가 `/api`, `/ws`를 서버로 넘김. 이미 떠 있는 서버가 있으면 그걸 쓰고 끝날 때도 안 끔. `--server-port`, `--dev`(개발 모드), `--rebuild`도 있음.
+`launch.sh`는 서버를 127.0.0.1 에만 띄우고 웹 UI(vite)가 `/api`, `/ws`를 서버로 넘김. 이미 떠 있는 서버가 있으면 그걸 쓰고 끝날 때도 안 끔. `--server-port`, `--dev`(개발 모드), `--rebuild`도 있음. 시작할 때 소스(CLI `src/`, 웹 `web/src/` 등)가 빌드보다 새로우면 알아서 다시 빌드함 (빌드가 실패하면 예전 빌드로 뜸). 그래서 코드를 고치거나 `git pull` 한 뒤엔 다시 띄우기만 하면 됨 (launchd 로 띄웠으면 `launchctl kickstart -k gui/$(id -u)/claude-cardinal`).
 
 수동으로 하려면:
 
