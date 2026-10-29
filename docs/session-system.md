@@ -255,7 +255,7 @@ assistant  text          ← 마지막 답 (stop_reason: end_turn)
 
 **`cardinal kill` 로 끝낸 세션은 `--all` 이 안 살림** (사람이 끝낸 것). kill 표시는 `meta.json` 의 `killedAt`에 둠: `state.json`에 `Kill`을 써도 죽어가는 claude 의 `SessionEnd` 훅이 늦게 와서 덮어씀 (실측). 예전에 kill 된 세션은 상태 이벤트가 `Kill`로 남아 있으면 그것도 빼줌. 이름을 찍어 직접 `cardinal revive <이름>` 하면 kill 된 것도 살리고 표시를 지움.
 
-**카디널 서버가 뜰 때 알아서 `cardinal revive --all`** (요청을 받기 시작한 뒤, 카디널 MCP 를 붙여야 해서). 그래서 launchd 로 서버를 자동 실행하면([autostart.sh](../autostart.sh)) 재부팅 뒤 로그인하면 세션이 대화째 돌아옴. 끄려면 `CARDINAL_TMUX_REVIVE=0`. 웹 UI 의 tmux 세션 "다시 시작" 버튼 / `POST /api/sessions/<이름>/restart`도 같은 것.
+**카디널 서버가 뜰 때 알아서 `cardinal revive --all`** (요청을 받기 시작한 뒤, 카디널 MCP 를 붙여야 해서). 그래서 서버를 자동 실행하면 (macOS launchd [autostart.sh](../autostart.sh), Linux systemd·cron [autostart-linux.sh](../autostart-linux.sh)) 재부팅 뒤 로그인하면 세션이 대화째 돌아옴. 끄려면 `CARDINAL_TMUX_REVIVE=0`. 웹 UI 의 tmux 세션 "다시 시작" 버튼 / `POST /api/sessions/<이름>/restart`도 같은 것.
 
 launchd 아래에서 띄운 tmux 서버는 따로 떨어져 나가서(부모 PID 1, 자기 프로세스 그룹) 서버를 다시 시작해도 안 죽음 (확인).
 

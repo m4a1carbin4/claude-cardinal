@@ -255,7 +255,7 @@ When the tmux session disappears (reboot, tmux server exit), claude ends with it
 
 **`--all` doesn't revive sessions ended with `cardinal kill`** (a human ended them). The kill mark lives in `meta.json` as `killedAt`: writing `Kill` into `state.json` gets overwritten by the dying claude's late `SessionEnd` hook (measured). Older killed sessions are skipped too if their state event is still `Kill`. `cardinal revive <name>` by name revives even a killed one and clears the mark.
 
-**The Cardinal server runs `cardinal revive --all` on startup** (after it starts serving, since the Cardinal MCP has to attach). So with the server auto-started by launchd ([autostart.sh](../autostart.sh)), sessions come back with their conversations after a reboot + login. Turn off with `CARDINAL_TMUX_REVIVE=0`. The web UI's "다시 시작" (restart) button on a tmux session / `POST /api/sessions/<name>/restart` do the same.
+**The Cardinal server runs `cardinal revive --all` on startup** (after it starts serving, since the Cardinal MCP has to attach). So with the server auto-started (macOS launchd [autostart.sh](../autostart.sh), Linux systemd/cron [autostart-linux.sh](../autostart-linux.sh)), sessions come back with their conversations after a reboot + login. Turn off with `CARDINAL_TMUX_REVIVE=0`. The web UI's "다시 시작" (restart) button on a tmux session / `POST /api/sessions/<name>/restart` do the same.
 
 A tmux server started under launchd detaches (parent PID 1, its own process group), so it survives server restarts (checked).
 
