@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# macOS 로그인(재부팅 후 포함) 때 카디널 서버 + 웹 UI 를 알아서 띄우게 launchd 에 등록.
+# macOS 로그인(재부팅 후 포함) 때 카디널 서버 + 웹 UI 를 알아서 띄우게 launchd 에 등록. Linux 면 autostart-linux.sh 로 넘김.
 # 실제로 띄우는 건 launch.sh 라서 옵션은 launch.sh 것을 그대로 넘김. 기본은 127.0.0.1 에만 열림.
 #
 #   ./autostart.sh install --sdk            # 등록하고 바로 시작 (이미 등록돼 있으면 새 옵션으로 다시)
@@ -29,7 +29,11 @@ usage() {
 EOF
 }
 
-[[ "$(uname)" == Darwin ]] || { echo "autostart.sh: macOS(launchd) 전용" >&2; exit 1; }
+case "$(uname)" in
+  Darwin) ;;
+  Linux) exec "$ROOT/autostart-linux.sh" "$@" ;; # systemd(사용자/시스템) 또는 cron
+  *) echo "autostart.sh: macOS(launchd)·Linux(autostart-linux.sh) 만 됨" >&2; exit 1 ;;
+esac
 
 xml() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
 

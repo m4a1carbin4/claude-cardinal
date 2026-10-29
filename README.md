@@ -95,6 +95,20 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 
 `launch.sh`는 서버를 127.0.0.1 에만 띄우고 웹 UI(vite)가 `/api`, `/ws`를 서버로 넘김. 이미 떠 있는 서버가 있으면 그걸 쓰고 끝날 때도 안 끔. `--server-port`, `--dev`(개발 모드), `--rebuild`도 있음. 시작할 때 소스(CLI `src/`, 웹 `web/src/` 등)가 빌드보다 새로우면 알아서 다시 빌드함 (빌드가 실패하면 예전 빌드로 뜸). 그래서 코드를 고치거나 `git pull` 한 뒤엔 다시 띄우기만 하면 됨 (launchd 로 띄웠으면 `launchctl kickstart -k gui/$(id -u)/claude-cardinal`).
 
+재부팅 때 알아서 뜨게 (옵션은 `launch.sh` 것을 그대로 넘김, `DISCORD_TOKEN`·`SLACK_*`·`CARDINAL_*` 환경변수도 같이 들어감):
+
+```sh
+./autostart.sh install --sdk      # macOS: launchd (~/Library/LaunchAgents/claude-cardinal.plist)
+./autostart.sh install --sdk      # Linux: autostart-linux.sh 로 넘어감 (아래 방식 중 되는 것)
+./autostart-linux.sh install --user   --sdk   # systemd 사용자 서비스 (sudo 없이, 부팅 때 바로 뜨려면 linger)
+./autostart-linux.sh install --system --sdk   # systemd 시스템 서비스 (sudo, 이 사용자로 돌림. 서버·ssh·WSL)
+./autostart-linux.sh install --cron   --sdk   # systemd 없을 때: crontab @reboot + 꺼지면 10초 뒤 다시
+./autostart.sh status / uninstall
+./autostart-linux.sh print --system --sdk     # 만들 유닛만 미리 보기 (토큰은 가림)
+```
+
+Linux 는 방식을 안 고르면 사용자 서비스 → 시스템 서비스 → cron 순으로 되는 걸 씀. 셋 다 세션용 tmux 는 다시 시작해도 안 죽임 (systemd 는 `KillMode=process`). 환경 파일은 `~/.config/claude-cardinal/claude-cardinal.env`(600), 로그는 `~/.cardinal/logs/autostart.log`.
+
 수동으로 하려면:
 
 ```sh
