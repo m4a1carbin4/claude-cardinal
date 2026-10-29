@@ -3,7 +3,7 @@
 - 세션 제어: cardinal CLI 호출 (로직은 CLI 한 곳)
 - 세션 기록: ~/.cardinal 파일 → SQLite 수집
 - 웹 터미널: /ws/term/<이름>
-- 메시지 채널: 디스코드(DISCORD_TOKEN 있으면) + local, 라우트 따라 세션에 전달, cardinal reply 로 답장
+- 메시지 채널: 디스코드(DISCORD_TOKEN 있으면) + 슬랙(SLACK_BOT_TOKEN + SLACK_APP_TOKEN 있으면) + local, 라우트 따라 세션에 전달, cardinal reply 로 답장
 - SDK 모드(--sdk): tmux 없이 서버 안에서 Claude Agent SDK 세션을 돌림 (backend=sdk). 채널·라우트는 같이 씀
 - 웹드라이브: 사람과 세션이 같이 쓰는 파일 공간 (/api/drive, 세션마다 /sessions/<이름>, drive.py)
 """
@@ -101,7 +101,7 @@ class Hub:
 
 
 class RouteIn(BaseModel):
-    platform: Literal["discord", "local", "*"] = "*"
+    platform: Literal["discord", "slack", "local", "*"] = "*"
     channel: str | None = None  # 채널 이름 또는 ID. 없으면 아무 채널
     trigger: str | None = None  # 없으면 모든 메시지
     match: Literal["prefix", "contains", "regex", "mention"] = "prefix"
@@ -349,7 +349,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             router.add_adapter(discord)
             await discord.start(router.handle)
         else:
-            log.info("DISCORD_TOKEN 없음 → 디스코드 채널 꺼짐 (local 채널만)")
+            log.info("DISCORD_TOKEN 없음 → 디스코드 채널 꺼짐")
+        slack = None
+        app.state.slack = None
+        if settings.slack_bot_token and settings.slack_app_token:
+            from .channel.slack_adapter import SlackAdapter
+
+            slack = SlackAdapter(settings.slack_bot_token, settings.slack_app_token)
+            app.state.slack = slack
+            router.add_adapter(slack)
+            await slack.start(router.handle)
+        elif settings.slack_bot_token or settings.slack_app_token:
+            log.warning("슬랙은 SLACK_BOT_TOKEN(xoxb-) 과 SLACK_APP_TOKEN(xapp-) 둘 다 있어야 함 → 슬랙 채널 꺼짐")
 
         # cardinal reply 가 서버를 찾을 수 있게
         # 사전 확인과 여기 사이에 다른 서버가 떴을 수도 있으니 덮어쓰기 직전에 한 번 더
@@ -372,6 +383,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await mcp_ctx.__aexit__(None, None, None)
             if discord:
                 await discord.stop()
+            if slack:
+                await slack.stop()
 
     app = FastAPI(title="Cardinal", lifespan=lifespan)
     # 인증은 MCP 쪽 헤더(세션 키)로 따로 함. 웹 UI 전체 받기(/{path}) 보다 먼저 붙여야 GET 이 안 뺏김
@@ -435,10 +448,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health", dependencies=api)
     async def health():
-        d = app.state.discord
+        d, s = app.state.discord, app.state.slack
         return {
             "ok": True,
-            "channels": {"local": "ready", "discord": d.status if d else "off"},
+            "channels": {"local": "ready", "discord": d.status if d else "off", "slack": s.status if s else "off"},
             "sessions": len(db.sessions()),
             "sdk": {"enabled": settings.sdk, "default_backend": "sdk" if settings.sdk else "tmux",
                     "alive": sum(1 for x in sdk_mgr.sessions.values() if x.alive)},

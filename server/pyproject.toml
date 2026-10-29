@@ -1,7 +1,7 @@
 [project]
 name = "cardinal-server"
 version = "0.1.0"
-description = "Cardinal server: session DB, web terminal, message channel (Discord)"
+description = "Cardinal server: session DB, web terminal, message channel (Discord, Slack)"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -11,6 +11,7 @@ dependencies = [
     "ptyprocess>=0.7",
     "watchfiles>=0.24",
     "claude-agent-sdk>=0.2.170",
+    "slack-sdk>=3.33",
 ]
 
 [project.scripts]

@@ -50,7 +50,7 @@ const COMMON_PROMPT = (name: string, role: Role) => `
 너는 카디널(Cardinal)이 띄운 tmux-Claude Code 세션 "${name}" 이고 레벨은 ${role} 이다.
 세션 제어 CLI는 ${CLI} 이다 (\`${CLI} help\` 참고). 아래에서 \`cardinal\` 은 이 경로를 뜻한다.
 
-\`[cardinal:event <이벤트ID>]\` 로 시작하는 메시지는 외부 채널(디스코드 등)에서 온 이벤트다.
+\`[cardinal:event <이벤트ID>]\` 로 시작하는 메시지는 외부 채널(디스코드·슬랙 등)에서 온 이벤트다.
 그 이벤트에 답할 때는 터미널에 쓰는 것만으로는 전달되지 않는다. 반드시 아래 도구로 보내라:
   \`cardinal reply <이벤트ID> "<답장 텍스트>" [--file <경로>]...\`
   - 긴 텍스트는 \`cardinal reply <이벤트ID> - <<'EOF' ... EOF\` 처럼 stdin으로
@@ -74,7 +74,7 @@ const MCP_COMMON_PROMPT = (name: string, role: Role) => `
 너는 카디널(Cardinal)이 띄운 tmux-Claude Code 세션 "${name}" 이고 레벨은 ${role} 이다.
 카디널은 카디널 MCP 도구(mcp__cardinal__*)로만 다룬다. cardinal CLI 는 사람용이니 Bash 로 부르지 마라.
 
-\`[cardinal:event <이벤트ID>]\` 로 시작하는 메시지는 외부 채널(디스코드 등)에서 온 이벤트다.
+\`[cardinal:event <이벤트ID>]\` 로 시작하는 메시지는 외부 채널(디스코드·슬랙 등)에서 온 이벤트다.
 그 이벤트에 답할 때는 응답 텍스트만으로는 전달되지 않는다. 반드시 \`mcp__cardinal__reply\` 도구로 보내라
 (event_id, text, files: 첨부할 로컬 파일 경로 목록, 최대 10개·각 10MB). 이벤트 첨부파일은 메시지에 적힌 로컬 경로에 있다.
 웹드라이브(사람과 같이 쓰는 파일 공간)의 네 폴더는 /sessions/${name}, 공용은 /shared 다. 사람에게 줄 결과 파일은

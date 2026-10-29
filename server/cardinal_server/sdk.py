@@ -53,7 +53,7 @@ INTERRUPT_MARK = "[Request interrupted by user"
 COMMON_PROMPT = """
 너는 카디널(Cardinal) 서버가 Claude Agent SDK 로 띄운 세션 "{name}" 이고 레벨은 {role} 이다 (tmux/터미널 없음).
 
-`[cardinal:event <이벤트ID>]` 로 시작하는 메시지는 외부 채널(디스코드 등)에서 온 이벤트다.
+`[cardinal:event <이벤트ID>]` 로 시작하는 메시지는 외부 채널(디스코드·슬랙 등)에서 온 이벤트다.
 그 이벤트에 답할 때는 응답 텍스트만으로는 전달되지 않는다. 반드시 `mcp__cardinal__reply` 도구로 보내라
 (event_id, text, files: 첨부할 로컬 파일 경로 목록, 최대 10개·각 10MB). 이벤트 첨부파일은 메시지에 적힌 로컬 경로에 있다.
 사용자에게 확인이 필요하면 AskUserQuestion 을 써도 된다 (카디널이 사람에게 전달하고 답을 돌려줌).

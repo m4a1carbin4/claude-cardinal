@@ -25,7 +25,7 @@ usage() {
   status      등록/실행 상태
 
 로그: $LOG_DIR/launchd.log
-환경변수: CARDINAL_HOME, CARDINAL_PORT, CARDINAL_TOKEN, CARDINAL_WEB_HOSTS, DISCORD_TOKEN 이 설정돼 있으면 plist 에 그대로 들어감.
+환경변수: CARDINAL_HOME, CARDINAL_PORT, CARDINAL_TOKEN, CARDINAL_WEB_HOSTS, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_APP_TOKEN 이 설정돼 있으면 plist 에 그대로 들어감.
 EOF
 }
 
@@ -58,7 +58,7 @@ install() {
 
   env_xml+="    <key>PATH</key><string>$(xml "$(build_path)")</string>"$'\n'
   env_xml+="    <key>LANG</key><string>$(xml "${LANG:-en_US.UTF-8}")</string>"$'\n'
-  for name in CARDINAL_HOME CARDINAL_PORT CARDINAL_TOKEN CARDINAL_WEB_HOSTS DISCORD_TOKEN; do
+  for name in CARDINAL_HOME CARDINAL_PORT CARDINAL_TOKEN CARDINAL_WEB_HOSTS DISCORD_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN; do
     [[ -n "${!name:-}" ]] && env_xml+="    <key>$name</key><string>$(xml "${!name}")</string>"$'\n'
   done
 

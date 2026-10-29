@@ -7,7 +7,7 @@ export type Phase = 'dead' | 'starting' | 'working' | 'waiting' | 'done' | 'inte
 export interface Route {
   id: number;
   session_id: string;
-  platform: 'discord' | 'local' | '*';
+  platform: 'discord' | 'slack' | 'local' | '*';
   channel: string | null;
   trigger: string | null;
   match: 'prefix' | 'contains' | 'regex' | 'mention';
@@ -225,7 +225,7 @@ export interface ChannelEvent {
 
 export interface Health {
   ok: boolean;
-  channels: { local: string; discord: string };
+  channels: { local: string; discord: string; slack?: string };
   sessions: number;
   sdk?: { enabled: boolean; default_backend: Backend; alive: number };
 }

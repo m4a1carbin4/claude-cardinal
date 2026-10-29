@@ -18,6 +18,8 @@ class Settings:
     port: int
     token: str | None  # 있으면 HTTP/WS 전부 인증
     discord_token: str | None
+    slack_bot_token: str | None  # xoxb-, API 호출
+    slack_app_token: str | None  # xapp-, Socket Mode 접속
     sdk: bool  # CARDINAL_SDK=1 (cardinal-server --sdk): 서버 안 Claude Agent SDK 세션 사용 + 새 세션 기본 백엔드
     workspace: Path  # 작업 폴더를 안 주면 쓰는 고정 워크스페이스 (CLI 와 같은 곳)
     drive: Path  # 웹드라이브 (사람·세션이 같이 쓰는 파일 공간, drive.py)
@@ -48,6 +50,8 @@ def load() -> Settings:
         port=int(os.environ.get("CARDINAL_PORT", "7878")),
         token=os.environ.get("CARDINAL_TOKEN") or None,
         discord_token=os.environ.get("DISCORD_TOKEN") or None,
+        slack_bot_token=os.environ.get("SLACK_BOT_TOKEN") or None,
+        slack_app_token=os.environ.get("SLACK_APP_TOKEN") or None,
         sdk=os.environ.get("CARDINAL_SDK", "") not in ("", "0", "false"),
         workspace=Path(os.environ.get("CARDINAL_WORKSPACE", home / "workspace")).expanduser(),
         drive=Path(os.environ.get("CARDINAL_DRIVE", home / "drive")).expanduser(),

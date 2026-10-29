@@ -12,6 +12,7 @@ export function RouteFields({ value, onChange }: { value: RouteInput; onChange: 
         <select value={value.platform} onChange={(e) => set({ platform: e.target.value as RouteInput['platform'] })}>
           <option value="*">모든 채널</option>
           <option value="discord">discord</option>
+          <option value="slack">slack</option>
           <option value="local">local</option>
         </select>
       </label>

@@ -137,12 +137,8 @@ export default function App() {
               <span className="dot info" /> SDK 모드 · {health.sdk.alive}
             </span>
           )}
-          {health && (
-            <span className="chip" title={`디스코드: ${health.channels.discord}`}>
-              <span className={`dot ${health.channels.discord === 'ready' ? 'ok' : health.channels.discord === 'off' ? 'muted' : health.channels.discord.startsWith('failed') ? 'err' : 'info'}`} />
-              디스코드 {health.channels.discord.startsWith('failed') ? '실패' : health.channels.discord}
-            </span>
-          )}
+          {health && <ChannelChip label="디스코드" status={health.channels.discord} />}
+          {health?.channels.slack && health.channels.slack !== 'off' && <ChannelChip label="슬랙" status={health.channels.slack} />}
           <button className="ghost small" onClick={() => setNeedToken(true)} title="서버 토큰 (CARDINAL_TOKEN)">
             {hasToken() ? '🔑 토큰' : '토큰'}
           </button>
@@ -229,5 +225,17 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+// 외부 채널 연결 상태 (connecting / ready / failed: … / closed / off)
+function ChannelChip({ label, status }: { label: string; status: string }) {
+  const failed = status.startsWith('failed');
+  const tone = status === 'ready' ? 'ok' : status === 'off' ? 'muted' : failed ? 'err' : 'info';
+  return (
+    <span className="chip" title={`${label}: ${status}`}>
+      <span className={`dot ${tone}`} />
+      {label} {failed ? '실패' : status}
+    </span>
   );
 }
