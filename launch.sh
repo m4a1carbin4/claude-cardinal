@@ -30,7 +30,7 @@ usage() {
       --sdk              서버를 SDK 모드로 (세션을 tmux 대신 서버 안 Claude Agent SDK 로, docs/sdk-mode.md)
   -h, --help             이 도움말
 
-환경변수: CARDINAL_HOME, CARDINAL_TOKEN, DISCORD_TOKEN 등은 서버에 그대로 넘어감.
+환경변수: CARDINAL_HOME, CARDINAL_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_APP_TOKEN 등은 서버에 그대로 넘어감.
 CARDINAL_WEB_HOSTS=a.example,b.example 이면 웹 UI 를 그 이름으로도 열 수 있음 (vite allowedHosts).
 EOF
 }

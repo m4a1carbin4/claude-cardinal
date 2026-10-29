@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS ingest_offsets (
 CREATE TABLE IF NOT EXISTS routes (           -- 어떤 채널 이벤트를 어떤 세션에 넘길지
   id          INTEGER PRIMARY KEY,
   session_id  TEXT NOT NULL REFERENCES sessions(id),
-  platform    TEXT NOT NULL DEFAULT '*',        -- discord | local | *
+  platform    TEXT NOT NULL DEFAULT '*',        -- discord | slack | local | *
   channel     TEXT,                             -- 채널 이름 또는 ID. NULL = 아무 채널
   trigger     TEXT,                             -- NULL = 모든 메시지
   match       TEXT NOT NULL DEFAULT 'prefix',   -- prefix | contains | regex | mention

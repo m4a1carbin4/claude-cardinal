@@ -1,6 +1,6 @@
 # Cardinal server (Python / FastAPI)
 
-[한국어](server.md) · Related: [session system](session-system.en.md), [web terminal](web-terminal.en.md), [SDK mode](sdk-mode.en.md) (SDK sessions inside the server, no tmux), [Cardinal MCP](mcp.en.md) (how models in sessions drive Cardinal)
+[한국어](server.md) · Related: [session system](session-system.en.md), [web terminal](web-terminal.en.md), [SDK mode](sdk-mode.en.md) (SDK sessions inside the server, no tmux), [Cardinal MCP](mcp.en.md) (how models in sessions drive Cardinal), [Slack channel](slack.en.md)
 
 The server that used to live inside the CLI (`cardinal serve`) is now a separate Python service in `server/`, so a message channel and a database can be attached.
 This document follows "where a single request goes, in what order", with code locations and real records.
@@ -65,6 +65,7 @@ cd server
 uv sync
 uv run cardinal-server                     # http://127.0.0.1:7878
 DISCORD_TOKEN=xxx uv run cardinal-server   # with the Discord channel
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… uv run cardinal-server   # with the Slack channel
 ```
 
 | Env var | Default | |
@@ -76,6 +77,7 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # with the Discord channel
 | `CARDINAL_TOKEN` | unset | if set, all HTTP/WS need `?token=` or `Authorization: Bearer` |
 | `CARDINAL_CLI` | `<repo>/bin/cardinal` | |
 | `DISCORD_TOKEN` | unset | unset → Discord off, local channel only. With a bad token an error is logged (`디스코드 연결 실패 …`) and only Discord is off. Check with `GET /api/health` |
+| `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | unset | both set → Slack channel (Socket Mode). Wrong → only Slack is off. [Slack channel](slack.en.md) |
 
 `load()` in `config.py` reads these once into a frozen `Settings` dataclass.
 
@@ -105,6 +107,7 @@ lifespan start
  2. ingestor.run() as a background task    file-watch loop
  3. local.start(router.handle)
  4. if DISCORD_TOKEN: create DiscordAdapter, start → client.start(token) task (gateway login)
+    if SLACK_BOT_TOKEN + SLACK_APP_TOKEN: SlackAdapter too (auth.test → Socket Mode connect task)
  5. write ~/.cardinal/server.json {url, token, pid}, mode 600
     (right before writing, check again whether another server came up → if so, fail startup without overwriting)
     → `cardinal reply` inside sessions and CLI `new` (whether to attach the Cardinal MCP) read this to find the server
@@ -116,7 +119,7 @@ lifespan start
       (off with `CARDINAL_TMUX_REVIVE=0`, [session system](session-system.en.md#revive))
 lifespan end (open requests get at most 5s: timeout_graceful_shutdown)
  6. delete server.json if its pid is ours (don't delete if another server overwrote it)
- 7. cancel the ingest task, close the Discord connection
+ 7. cancel the ingest task, close the Discord and Slack connections
 ```
 
 Step 1 is awaited separately before `run()` so the DB is current before the first request, which route matching depends on.
@@ -567,6 +570,9 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 ---
 
 ## 14. Discord bot setup
+
+For Slack see [Slack channel](slack.en.md) (app manifest, two tokens).
+
 
 1. Create an app in the Developer Portal and get a Bot token.
 2. Bot → Privileged Gateway Intents → enable **MESSAGE CONTENT** (otherwise `content` arrives empty, so triggers never match; only mentions work).

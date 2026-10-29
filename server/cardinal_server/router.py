@@ -41,7 +41,8 @@ def match_route(route: dict, msg: InboundMessage) -> tuple[bool, str]:
     trigger = route.get("trigger")
     kind = route["match"]
     if kind == "mention":
-        return msg.mentions_bot, re.sub(r"<@!?\d+>", "", content).strip()
+        # 디스코드 <@123>/<@!123>, 슬랙 <@U123>/<@U123|이름>
+        return msg.mentions_bot, re.sub(r"<@!?\w+(?:\|[^>]*)?>", "", content).strip()
     if not trigger:
         return True, content
     if kind == "prefix":

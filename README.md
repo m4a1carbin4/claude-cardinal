@@ -70,7 +70,7 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [x] 워커 / 마스터 구분
 - [x] 마스터가 세션 띄워서 일 넘기기
 - [x] 서버 분리 (Python FastAPI) + 세션 기록 SQLite
-- [x] 이벤트 채널 (디스코드 봇 + local) + 세션별 라우트 (채널명, 트리거)
+- [x] 이벤트 채널 (디스코드 봇 + 슬랙 봇 + local) + 세션별 라우트 (채널명, 트리거)
 - [x] 세션 안 에이전트가 이벤트에 직접 답장 (`cardinal reply`, 파일 첨부)
 - [x] 세션별 훅 폴더 (고유 키 기준) → 이름 재사용 / `/clear` / purge 꼬임 해결
 - [x] 세션별 `send` 직렬화 (세션 락 + idle 대기 → 메시지 하나 = 턴 하나)
@@ -79,7 +79,7 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [x] SDK 모드: tmux 없이 서버 안 Claude Agent SDK 세션 (생성/재시작/중단, 질문 답하기, MCP, 실시간 웹소켓, 같은 채널)
 - [x] SDK 모드 웹 UI (대화 실시간, 질문/권한 답하기, MCP 상태, 설정·다시 시작)
 - [x] 카디널 MCP: 서버 안 MCP 하나를 tmux·SDK 세션이 같이 씀 (역할별 도구, 세션 키, 서버 재시작 때 다시 붙이기)
-- [ ] 디스코드 실제 봇으로 돌려보기
+- [ ] 디스코드·슬랙 실제 봇으로 돌려보기
 - [ ] 카디널 캐릭터성
 
 ## 실행 방법
@@ -139,18 +139,20 @@ cardinal revive w1                               # tmux 가 없어진 세션(재
 cd server && uv sync
 uv run cardinal-server                     # http://127.0.0.1:7878
 DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 봇도 같이
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… uv run cardinal-server   # 슬랙 봇도 같이 (Socket Mode, docs/slack.md)
 CARDINAL_TOKEN=xxx uv run cardinal-server  # 토큰 걸기 (?token=xxx 또는 Bearer)
 ```
 
 - 웹 UI (아래), 세션 생성할 때 채널 라우트 (채널명 + 트리거) 붙이기
 - 세션 기록은 `~/.cardinal/cardinal.db` (SQLite)에 쌓임. purge해도 DB엔 남음
-- 상태 확인: `GET /api/health` (디스코드 연결 상태 포함)
+- 상태 확인: `GET /api/health` (디스코드·슬랙 연결 상태 포함)
 - 라우트에 맞는 디스코드 메시지 → 세션에 전달 → 세션 안 에이전트가 `mcp__cardinal__reply` 도구로 답장 (서버 없이 띄운 세션이나 사람은 CLI로):
 
 ```sh
 cardinal reply evt_71363e3e "답장" --file result.png
 ```
 - 세션 안 모델은 `/mcp/worker`, `/mcp/master`(카디널 MCP)로 카디널을 다룸 → [docs/mcp.md](docs/mcp.md)
+- 슬랙: Socket Mode 라 공개 URL 없이 붙음. 채널 메시지는 그 스레드로 답장 → [docs/slack.md](docs/slack.md)
 - 웹드라이브: 사람과 세션이 같이 쓰는 파일 공간 (`~/.cardinal/drive`, 세션마다 `/sessions/<이름>`, 공용 `/shared`). 웹에서 올리고 받고 고치고, 세션은 `drive_*` MCP 도구로 같은 CRUD, 요청에 파일 붙이기 → [docs/drive.md](docs/drive.md)
 
 API랑 채널 자세한 건 [docs/server.md](docs/server.md).

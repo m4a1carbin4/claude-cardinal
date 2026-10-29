@@ -1,6 +1,6 @@
 # 카디널 서버 (Python / FastAPI)
 
-[English](server.en.md) · 관련: [세션 시스템](session-system.md), [웹 터미널](web-terminal.md), [SDK 모드](sdk-mode.md) (tmux 없이 서버 안 SDK 세션), [카디널 MCP](mcp.md) (세션 안 모델이 카디널을 다루는 길)
+[English](server.en.md) · 관련: [세션 시스템](session-system.md), [웹 터미널](web-terminal.md), [SDK 모드](sdk-mode.md) (tmux 없이 서버 안 SDK 세션), [카디널 MCP](mcp.md) (세션 안 모델이 카디널을 다루는 길), [슬랙 채널](slack.md)
 
 CLI 안에 있던 서버(`cardinal serve`)를 `server/`의 Python 서비스로 분리함. 메시지 채널이랑 DB를 붙이려고.
 이 문서는 "요청 하나가 들어와서 어디를 어떤 순서로 지나가는지"를 코드 위치랑 실제 기록으로 따라감.
@@ -65,6 +65,7 @@ cd server
 uv sync
 uv run cardinal-server                     # http://127.0.0.1:7878
 DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 채널 켜기
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… uv run cardinal-server   # 슬랙 채널 켜기
 ```
 
 | 환경변수 | 기본값 | |
@@ -76,6 +77,7 @@ DISCORD_TOKEN=xxx uv run cardinal-server   # 디스코드 채널 켜기
 | `CARDINAL_TOKEN` | 없음 | 있으면 HTTP/WS 전부 `?token=` 또는 `Authorization: Bearer` |
 | `CARDINAL_CLI` | `<repo>/bin/cardinal` | |
 | `DISCORD_TOKEN` | 없음 | 없으면 디스코드 끄고 local 채널만. 잘못된 토큰이면 에러 로그(`디스코드 연결 실패 …`)를 남기고 디스코드만 꺼짐. `GET /api/health`로 확인 |
+| `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | 없음 | 둘 다 있으면 슬랙 채널 (Socket Mode). 틀리면 슬랙만 꺼짐. [슬랙 채널](slack.md) |
 
 설정은 `config.py`의 `load()`가 한 번 읽어서 `Settings`(frozen dataclass)로 들고 다님.
 
@@ -105,6 +107,7 @@ lifespan 시작
  2. ingestor.run() 백그라운드 태스크         파일 감시 루프
  3. local.start(router.handle)
  4. DISCORD_TOKEN 있으면 DiscordAdapter 만들고 start → client.start(token) 태스크 (게이트웨이 접속)
+    SLACK_BOT_TOKEN + SLACK_APP_TOKEN 있으면 SlackAdapter 도 (auth.test → Socket Mode 접속 태스크)
  5. ~/.cardinal/server.json 쓰기 {url, token, pid}, 권한 600
     (쓰기 직전에 다른 서버가 떴는지 한 번 더 확인 → 떴으면 시작 실패, 덮어쓰지 않음)
     → 세션 안의 `cardinal reply`, CLI `new`(카디널 MCP 붙일지)가 이걸 읽고 서버를 찾음
@@ -116,7 +119,7 @@ lifespan 시작
       (`CARDINAL_TMUX_REVIVE=0`이면 안 함, [세션 시스템](session-system.md#revive-되살리기))
 lifespan 종료 (열린 요청은 최대 5초 기다림: timeout_graceful_shutdown)
  6. server.json의 pid가 자기면 삭제 (다른 서버가 덮어썼으면 안 지움)
- 7. ingest 태스크 취소, 디스코드 연결 닫기
+ 7. ingest 태스크 취소, 디스코드·슬랙 연결 닫기
 ```
 
 1번을 `run()` 전에 따로 await 하는 이유: 첫 요청이 들어오기 전에 DB가 최신이어야 라우트 매칭이 맞게 돌아감.
@@ -567,6 +570,9 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 ---
 
 ## 14. 디스코드 봇 설정
+
+슬랙은 [슬랙 채널](slack.md) (앱 manifest, 토큰 두 개).
+
 
 1. Developer Portal에서 앱 만들고 Bot 토큰 발급.
 2. Bot → Privileged Gateway Intents → **MESSAGE CONTENT** 켜기 (안 켜면 `content`가 빈 문자열로 와서 트리거가 절대 안 맞음. 멘션만 됨).
