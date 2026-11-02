@@ -271,7 +271,7 @@ Matching is case-sensitive.
 
 ### 6-4. Saving attachments (`router.py:113`)
 
-- Files over 25MB are skipped and marked with `error`.
+- Files over 1GB are skipped and marked with `error`.
 - Discord files are fetched with `attachment.read()`; local ones use the bytes already received.
 - Filenames are sanitized (`[^\w.\-]` → `_`) to prevent path escapes.
 - One failure doesn't stop delivery; failed files show up as `저장 실패: …` in the session message.
@@ -522,7 +522,7 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 | Route matches but session is `starting` | `_deliver` → CLI | waits as `pending` until idle, then delivered |
 | Session stuck on the working-dir trust dialog | CLI `send` | fails at once with "작업 폴더 신뢰 다이얼로그 대기 …" instead of waiting (`trust: true` at creation auto-accepts) |
 | Route matches but session is dead | `active_routes` | excluded from candidates (no delivery record either) |
-| Attachment over 25MB / download failure | `_save_attachments` | only that file gets `error`; delivery continues |
+| Attachment over 1GB / download failure | `_save_attachments` | only that file gets `error`; delivery continues |
 | `reply` with an unknown event ID | `router.reply` | 404, CLI exits 1 |
 | No adapter for that platform | `router.reply` | `replies.failed` recorded + 502 |
 | Reply API: no text and no files / 11+ files / file over 10MB | `app.py` `reply` | 400 / 413 / 413; files are read only up to limit+1 bytes to decide |

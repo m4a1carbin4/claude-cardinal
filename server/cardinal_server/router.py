@@ -14,7 +14,7 @@ from .db import DB, now
 
 log = logging.getLogger("cardinal.router")
 
-MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = 1024 * 1024 * 1024  # 1GB
 AUTO_REPLY_TIMEOUT_S = 900
 # 전달을 시작해도 되는 상태. busy/starting 은 CLI 가 idle 될 때까지 기다렸다가 넣음 (최대 600초).
 # waiting(승인 대기)은 CLI 가 거부하니까 바로 실패 처리
@@ -118,7 +118,7 @@ class Router:
             item = {"filename": a.filename, "size": a.size, "content_type": a.content_type, "url": a.url}
             try:
                 if a.size and a.size > MAX_ATTACHMENT_BYTES:
-                    raise ValueError("25MB 초과")
+                    raise ValueError(f"{MAX_ATTACHMENT_BYTES // 1024 // 1024}MB 초과")
                 data = a.data if a.data is not None else (await a.read() if a.read else None)
                 if data is None:
                     raise ValueError("내용 없음")

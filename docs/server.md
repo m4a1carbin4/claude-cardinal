@@ -271,7 +271,7 @@ InboundMessage
 
 ### 6-4. 첨부 저장 (`router.py:113`)
 
-- 크기가 25MB 넘으면 안 받고 `error` 표시.
+- 크기가 1GB 넘으면 안 받고 `error` 표시.
 - 디스코드는 `attachment.read()`로 받고, local은 이미 들어온 바이트 사용.
 - 파일명은 `[^\w.\-]` → `_`로 바꿔서 경로 탈출 방지.
 - 하나 실패해도 이벤트 전달은 계속. 실패한 건 세션 메시지에 `저장 실패: …`로 표시.
@@ -522,7 +522,7 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 | 라우트는 맞는데 세션이 `starting` | `_deliver` → CLI | idle 될 때까지 `pending`으로 기다렸다가 전달 |
 | 세션이 작업 폴더 신뢰 다이얼로그에 걸림 | CLI `send` | 기다리지 않고 바로 `failed` + "작업 폴더 신뢰 다이얼로그 대기 …" (만들 때 `trust: true`면 자동 수락) |
 | 라우트는 맞는데 세션이 죽음 | `active_routes` | 애초에 후보에서 빠짐 (전달 기록도 없음) |
-| 첨부 25MB 초과 / 다운로드 실패 | `_save_attachments` | 그 파일만 `error`, 전달은 계속 |
+| 첨부 1GB 초과 / 다운로드 실패 | `_save_attachments` | 그 파일만 `error`, 전달은 계속 |
 | `reply`에 모르는 이벤트 ID | `router.reply` | 404, CLI exit 1 |
 | 그 플랫폼 어댑터 없음 | `router.reply` | `replies.failed` 기록 + 502 |
 | 답장 API: 텍스트·파일 둘 다 없음 / 파일 11개 이상 / 파일 10MB 초과 | `app.py` `reply` | 400 / 413 / 413. 파일은 한도+1바이트까지만 읽어서 판단 |
