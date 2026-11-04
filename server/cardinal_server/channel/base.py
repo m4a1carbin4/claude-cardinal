@@ -25,6 +25,7 @@ class InboundMessage:
     message_id: str | None = None
     author: str | None = None
     mentions_bot: bool = False
+    from_bot: bool = False  # 다른 봇·앱이 보낸 메시지. allow_bots 라우트에만 맞음
     attachments: list[InboundAttachment] = field(default_factory=list)
 
 

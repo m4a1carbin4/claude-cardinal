@@ -232,7 +232,7 @@ What the Discord adapter fills in:
 | `mentions_bot` | whether the bot was mentioned |
 | `attachments` | filename/size/type/URL + `read` (content downloaded only when needed) |
 
-**All bot messages are ignored** (including its own). Otherwise a reply containing the trigger would loop forever.
+**Its own messages are ignored.** Otherwise a reply containing the trigger would loop forever. Other bots and webhooks are marked `from_bot` and only match routes with `allow_bots: true` (embed text is passed along too).
 
 ### 6-2. `router.handle` (`router.py:134`)
 
@@ -489,7 +489,7 @@ Full DDL in `db.py:SCHEMA`. Column meanings:
 
 ### routes
 
-`(id, session_id, platform, channel, trigger, match, auto_reply, enabled, created_at)`. Actual rows from testing:
+`(id, session_id, platform, channel, trigger, match, auto_reply, allow_bots, enabled, created_at)`. Actual rows from testing:
 
 | id | session | platform | channel | trigger | match | auto_reply |
 | --- | --- | --- | --- | --- | --- | --- |

@@ -106,6 +106,7 @@ class RouteIn(BaseModel):
     trigger: str | None = None  # 없으면 모든 메시지
     match: Literal["prefix", "contains", "regex", "mention"] = "prefix"
     auto_reply: bool = False
+    allow_bots: bool = False  # 다른 봇·앱(알림 연동 등)이 보낸 메시지도 받음
 
 
 PermissionModeT = Literal["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions", "auto"]

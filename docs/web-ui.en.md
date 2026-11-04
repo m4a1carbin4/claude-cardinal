@@ -30,7 +30,7 @@ pnpm dev        # dev server http://localhost:5173; /api and /ws are proxied to 
 | `GET …/screen` | `lines` (scrollback) | Screen tab: scrollback choice, 2s auto refresh |
 | `GET …/report` | phase, last human turn, tools | Result tab (optional tool calls) |
 | `GET …/events` | `limit` | Hook events tab: 100/300/1000/5000 |
-| `GET/POST …/routes`, `DELETE /api/routes/<id>` | `platform`, `channel`, `trigger`, `match`, `auto_reply` | Routes tab (list/add/delete), new-session dialog |
+| `GET/POST …/routes`, `DELETE /api/routes/<id>` | `platform`, `channel`, `trigger`, `match`, `auto_reply`, `allow_bots` | Routes tab (list/add/delete), new-session dialog |
 | `GET /api/events` | `limit` | Channel view: 20/50/200/500 |
 | `POST /api/channel/inbound` | `content`, `channel`, `author`, `mentions_bot` | Channel view "넣기" + "봇 멘션" |
 | `WS /ws/channel` message injection | `attachments` (base64) | file attachments on "넣기" (sent over the WebSocket when attached) |

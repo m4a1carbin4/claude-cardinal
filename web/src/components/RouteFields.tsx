@@ -1,8 +1,8 @@
 import type { RouteInput } from '../types';
 
-export const emptyRoute = (): RouteInput => ({ platform: '*', channel: null, trigger: null, match: 'prefix', auto_reply: false });
+export const emptyRoute = (): RouteInput => ({ platform: '*', channel: null, trigger: null, match: 'prefix', auto_reply: false, allow_bots: false });
 
-// 라우트 하나 입력 (채널명 + 트리거 + 매칭 방식 + 자동 답장)
+// 라우트 하나 입력 (채널명 + 트리거 + 매칭 방식 + 자동 답장 + 봇 메시지)
 export function RouteFields({ value, onChange }: { value: RouteInput; onChange: (r: RouteInput) => void }) {
   const set = (patch: Partial<RouteInput>) => onChange({ ...value, ...patch });
   return (
@@ -41,6 +41,10 @@ export function RouteFields({ value, onChange }: { value: RouteInput; onChange: 
       <label className="check">
         <input type="checkbox" checked={value.auto_reply} onChange={(e) => set({ auto_reply: e.target.checked })} />
         턴 끝나면 자동 답장
+      </label>
+      <label className="check" title="웹훅·알림 연동 같은 다른 봇·앱 메시지. 이 봇 자신은 항상 빼고 받음">
+        <input type="checkbox" checked={value.allow_bots} onChange={(e) => set({ allow_bots: e.target.checked })} />
+        다른 봇 메시지도 받기
       </label>
     </div>
   );
