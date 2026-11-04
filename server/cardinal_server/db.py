@@ -358,7 +358,16 @@ class DB:
         )
 
     def delete_route(self, route_id: int) -> None:
-        self.exec("DELETE FROM routes WHERE id=?", (route_id,))
+        # 이 라우트로 전달한 기록(deliveries.route_id)이 있으면 외래 키에 걸려 못 지움 → 기록은 두고 라우트 연결만 끊음
+        with self.lock:
+            self.conn.execute("BEGIN")
+            try:
+                self.conn.execute("UPDATE deliveries SET route_id=NULL WHERE route_id=?", (route_id,))
+                self.conn.execute("DELETE FROM routes WHERE id=?", (route_id,))
+                self.conn.execute("COMMIT")
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
 
     # ---------- 채널 이벤트 / 전달 / 답장 ----------
 
