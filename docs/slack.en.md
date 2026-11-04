@@ -78,10 +78,12 @@ What the scopes do: `*:history` + `message.*` events = receive messages, `app_me
 ```json
 {"platform":"slack","channel":"dev","trigger":"!ask","match":"prefix"}
 {"platform":"slack","match":"mention","auto_reply":true}
+{"platform":"slack","channel":"rdk-alert","trigger":"Response Error","match":"contains","allow_bots":true}
 ```
 
 - `channel` is the channel name (`dev`, `#dev`) or ID (`C0123…`). DMs are named `dm`.
 - `mention` is a message that `@`s the bot. The `<@U…>` mention is stripped from the body.
+- With `allow_bots: true` the route also takes messages from other bots/apps (webhooks, alert integrations, Workflow Builder, …). By default only human messages match. This bot itself is always skipped (no reply loops). In the web UI route form it's "다른 봇 메시지도 받기".
 - The web UI route form has `slack` under platform. `platform: "*"` matches Discord, Slack and local.
 
 ## Incoming messages
@@ -92,13 +94,15 @@ What the scopes do: `*:history` + `message.*` events = receive messages, `app_me
 | --- | --- |
 | `channel_id` / `channel_name` | channel ID / name (`conversations.info`, cached). DMs are `dm` |
 | `guild` | workspace name |
-| `author` | display name → real name → user name (`users.info`, cached) |
+| `author` | display name → real name → user name (`users.info`, cached). Bots: `username` → `bot_profile.name` |
 | `message_id` | **thread ts to reply in**: the thread if inside one, the message ts for channel messages, empty for DMs |
 | `mentions_bot` | `app_mention`, or `<@bot>` in the text |
-| `content` | links `<url\|text>` → `url`, `<#C1\|name>` → `#name`, `&amp;`/`&lt;`/`&gt;` unescaped |
+| `content` | `text` + `attachments` (pretext, title, text, fields). If `text` is empty, the plain text from `blocks`. Links `<url\|text>` → `url`, `<#C1\|name>` → `#name`, `&amp;`/`&lt;`/`&gt;` unescaped |
+| `from_bot` | has `bot_id` or subtype `bot_message`. Only matches `allow_bots` routes |
 | attachments | `url_private_download` fetched with the bot token. Without `files:read` Slack returns a login page (html) with 200; that's caught as an error |
 
-- Ignored: bot messages (including itself, to avoid reply loops), subtypes like edits, deletes, joins (`file_share` and `thread_broadcast` are kept).
+- Ignored: this bot's own messages (to avoid reply loops), subtypes like edits, deletes, joins (`file_share`, `thread_broadcast` and `bot_message` are kept).
+- Other bots' messages arrive but don't match routes without `allow_bots`. They're still recorded in `channel_events`.
 - Mentions arrive as both `message` and `app_mention`, and Slack sometimes redelivers, so each (channel, ts) is handled once.
 - Slack wants an ack within 3 seconds, so it acks first and then handles.
 

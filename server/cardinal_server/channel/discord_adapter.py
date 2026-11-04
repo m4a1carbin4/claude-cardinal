@@ -39,17 +39,23 @@ class DiscordAdapter:
 
         @client.event
         async def on_message(m: discord.Message):
-            if m.author.bot:  # 자기 자신 포함 봇 메시지는 무시 (답장 루프 방지)
+            if m.author == client.user:  # 자기 자신은 무시 (답장 루프 방지)
                 return
+            # 다른 봇·웹훅은 본문이 embed 에만 있기도 함
+            text = "\n".join(
+                t for e in (m.embeds if m.author.bot else [])
+                for t in (e.title, e.description, *(f"{f.name}: {f.value}" for f in e.fields)) if t
+            )
             msg = InboundMessage(
                 platform=self.platform,
-                content=m.content,
+                content="\n".join(t for t in (m.content, text) if t),
                 channel_id=str(m.channel.id),
                 channel_name=getattr(m.channel, "name", None) or "dm",
                 guild=m.guild.name if m.guild else None,
                 message_id=str(m.id),
                 author=str(m.author),
                 mentions_bot=client.user is not None and client.user in m.mentions,
+                from_bot=m.author.bot,  # allow_bots 라우트에만 맞음
                 attachments=[
                     InboundAttachment(filename=a.filename, size=a.size, content_type=a.content_type, url=a.url, read=a.read)
                     for a in m.attachments

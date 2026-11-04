@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS routes (           -- 어떤 채널 이벤트를 어�
   trigger     TEXT,                             -- NULL = 모든 메시지
   match       TEXT NOT NULL DEFAULT 'prefix',   -- prefix | contains | regex | mention
   auto_reply  INTEGER NOT NULL DEFAULT 0,       -- 1이면 턴 끝나고 마지막 응답을 서버가 대신 답장
+  allow_bots  INTEGER NOT NULL DEFAULT 0,       -- 1이면 다른 봇·앱이 보낸 메시지도 받음 (자기 자신은 빼고)
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL
 );
@@ -129,7 +130,7 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     for k in ("claude_args", "attachments", "files", "external_ids", "data", "sdk_options", "texts", "tools", "result"):
         if k in d and isinstance(d[k], str):
             d[k] = json.loads(d[k])
-    for k in ("alive", "auto_reply", "enabled", "complete", "interrupted", "mcp"):
+    for k in ("alive", "auto_reply", "allow_bots", "enabled", "complete", "interrupted", "mcp"):
         if k in d and d[k] is not None:
             d[k] = bool(d[k])
     return d
@@ -159,6 +160,8 @@ class DB:
         if "mcp" not in cols:
             self.conn.execute("ALTER TABLE sessions ADD COLUMN mcp INTEGER NOT NULL DEFAULT 0")
             self.conn.execute("UPDATE sessions SET mcp=1 WHERE backend='sdk'")
+        if "allow_bots" not in {r[1] for r in self.conn.execute("PRAGMA table_info(routes)")}:
+            self.conn.execute("ALTER TABLE routes ADD COLUMN allow_bots INTEGER NOT NULL DEFAULT 0")
 
     def q(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
         with self.lock:
@@ -326,8 +329,8 @@ class DB:
 
     def add_route(self, session_id: str, r: dict) -> dict:
         rid = self.exec(
-            "INSERT INTO routes (session_id, platform, channel, trigger, match, auto_reply, enabled, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            "INSERT INTO routes (session_id, platform, channel, trigger, match, auto_reply, allow_bots, enabled, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
             (
                 session_id,
                 r.get("platform") or "*",
@@ -335,6 +338,7 @@ class DB:
                 r.get("trigger"),
                 r.get("match") or "prefix",
                 int(bool(r.get("auto_reply"))),
+                int(bool(r.get("allow_bots"))),
                 now(),
             ),
         )

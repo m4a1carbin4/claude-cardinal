@@ -232,7 +232,7 @@ claude 훅 (dist/hook.js <훅 폴더>)           ~/.cardinal/hooks/<instanceId>/
 | `mentions_bot` | 봇이 멘션됐는지 |
 | `attachments` | 파일명/크기/타입/URL + `read` (내용은 필요할 때만 다운로드) |
 
-**봇 메시지는 전부 무시** (자기 자신 포함). 안 그러면 자기 답장에 트리거가 들어 있을 때 무한 루프.
+**자기 자신 메시지는 무시.** 안 그러면 자기 답장에 트리거가 들어 있을 때 무한 루프. 다른 봇·웹훅 메시지는 `from_bot`으로 표시돼서 라우트에 `allow_bots: true`가 있을 때만 맞음 (embed 본문도 같이 넘김).
 
 ### 6-2. `router.handle` (`router.py:134`)
 
@@ -489,7 +489,7 @@ local 채널 테스트 때 DB에 남은 그대로. 이벤트 `evt_71363e3e` (첨
 
 ### routes
 
-`(id, session_id, platform, channel, trigger, match, auto_reply, enabled, created_at)`. 테스트 때 실제 행:
+`(id, session_id, platform, channel, trigger, match, auto_reply, allow_bots, enabled, created_at)`. 테스트 때 실제 행:
 
 | id | session | platform | channel | trigger | match | auto_reply |
 | --- | --- | --- | --- | --- | --- | --- |

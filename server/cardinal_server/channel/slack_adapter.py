@@ -21,8 +21,8 @@ from .base import InboundAttachment, InboundMessage, OnMessage, OutboundFile, sp
 log = logging.getLogger("cardinal.slack")
 
 MAX_LEN = 4000  # 슬랙 권장 글자 수 (한도는 40000 이지만 길면 잘려 보임)
-# 받는 메시지 종류. 수정·삭제·입장 같은 건 무시
-_SUBTYPES = {None, "file_share", "thread_broadcast"}
+# 받는 메시지 종류. 수정·삭제·입장 같은 건 무시. bot_message 는 웹훅·알림 연동 (allow_bots 라우트에만 맞음)
+_SUBTYPES = {None, "file_share", "thread_broadcast", "bot_message"}
 _LINK = re.compile(r"<(https?://[^|>]+)(?:\|[^>]*)?>")
 _CHANNEL_REF = re.compile(r"<#\w+\|([^>]*)>")
 
@@ -34,6 +34,34 @@ def plain_text(text: str) -> str:
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
+def _block_text(node) -> str:
+    """Block Kit(blocks) 에서 글자만 뽑음. 알림 봇은 본문을 여기에만 넣기도 함"""
+    if isinstance(node, list):
+        return "\n".join(t for t in map(_block_text, node) if t)
+    if not isinstance(node, dict):
+        return ""
+    kind, elements = node.get("type"), node.get("elements") or []
+    if kind in ("rich_text_section", "rich_text_preformatted", "rich_text_quote"):  # 한 줄 안의 조각들
+        return "".join(el.get("text") or el.get("url") or "" for el in elements)
+    if kind == "rich_text_list":
+        return "\n".join("- " + _block_text(el) for el in elements)
+    text = node.get("text")
+    parts = [text if isinstance(text, str) else (text or {}).get("text") or ""]
+    parts += [_block_text(node[k]) for k in ("fields", "elements") if k in node]
+    return "\n".join(t for t in parts if t)
+
+
+def message_text(e: dict) -> str:
+    """본문 + 옛 attachments(알림 연동이 많이 씀). text 가 비었으면 blocks 에서"""
+    parts = [e.get("text") or _block_text(e.get("blocks") or [])]
+    for a in e.get("attachments") or []:
+        body = [a.get("pretext"), a.get("title"), a.get("text")]
+        body += [f"{f.get('title')}: {f.get('value')}" for f in a.get("fields") or []]
+        body = [t for t in body if t] or [_block_text(a.get("blocks") or []) or a.get("fallback")]
+        parts += body
+    return "\n".join(t for t in parts if t)
+
+
 class SlackAdapter:
     platform = "slack"
 
@@ -42,6 +70,7 @@ class SlackAdapter:
         self.web = AsyncWebClient(token=bot_token)
         self.client = SocketModeClient(app_token=app_token, web_client=self.web)
         self.bot_user_id: str | None = None
+        self.bot_id: str | None = None  # 봇이 보낸 메시지의 bot_id (자기 메시지 거르기)
         self.team: str | None = None
         self._task: asyncio.Task | None = None
         self._callback: OnMessage | None = None
@@ -60,7 +89,7 @@ class SlackAdapter:
         # 토큰이 틀려도 서버는 계속 뜨고 슬랙만 꺼짐 (디스코드와 같게)
         try:
             auth = await self.web.auth_test()
-            self.bot_user_id, self.team = auth["user_id"], auth.get("team")
+            self.bot_user_id, self.bot_id, self.team = auth["user_id"], auth.get("bot_id"), auth.get("team")
             await self.client.connect()
             self.status = "ready"
             log.info("슬랙 연결됨: %s (%s)", auth.get("user"), self.team)
@@ -96,13 +125,16 @@ class SlackAdapter:
     async def _on_message(self, e: dict) -> None:
         if e.get("subtype") not in _SUBTYPES:
             return
-        # 자기 자신 포함 봇 메시지는 무시 (답장 루프 방지)
-        if e.get("bot_id") or not e.get("user") or e.get("user") == self.bot_user_id:
+        # 자기 자신은 무시 (답장 루프 방지). 다른 봇·앱은 from_bot 으로 표시해서 allow_bots 라우트만 받게
+        if e.get("user") == self.bot_user_id or (self.bot_id and e.get("bot_id") == self.bot_id):
+            return
+        from_bot = bool(e.get("bot_id")) or e.get("subtype") == "bot_message"
+        if not from_bot and not e.get("user"):
             return
         channel, ts = e.get("channel"), e.get("ts")
         if not channel or not ts or self._seen_before(channel, ts):
             return
-        text = e.get("text") or ""
+        text = message_text(e)
         im = e.get("channel_type") == "im" or channel.startswith("D")
         msg = InboundMessage(
             platform=self.platform,
@@ -112,8 +144,9 @@ class SlackAdapter:
             guild=self.team,
             # 답장할 자리(스레드 ts): 스레드 안이면 그 스레드, 채널이면 이 메시지에 스레드로, DM 은 스레드 없이
             message_id=e.get("thread_ts") or (None if im else ts),
-            author=await self._user_name(e["user"]),
+            author=await self._author(e),
             mentions_bot=e.get("type") == "app_mention" or (self.bot_user_id is not None and f"<@{self.bot_user_id}" in text),
+            from_bot=from_bot,
             attachments=[self._attachment(f) for f in e.get("files") or [] if f.get("mode") != "tombstone"],
         )
         if self._callback:
@@ -137,6 +170,12 @@ class SlackAdapter:
                 log.warning("슬랙 채널 이름 못 가져옴 %s: %s", channel, e)
                 return channel
         return self._names[channel]
+
+    async def _author(self, e: dict) -> str:
+        # 웹훅·연동은 user 가 없고 username / bot_profile 에 이름이 있음
+        if not e.get("bot_id") and e.get("user"):
+            return await self._user_name(e["user"])
+        return e.get("username") or (e.get("bot_profile") or {}).get("name") or e.get("bot_id") or e.get("user") or "bot"
 
     async def _user_name(self, user: str) -> str:
         if user not in self._names:

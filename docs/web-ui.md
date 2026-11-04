@@ -30,7 +30,7 @@ pnpm dev        # 개발 서버 http://localhost:5173. /api, /ws 는 카디널 �
 | `GET …/screen` | `lines` (스크롤백) | 화면 탭: 스크롤백 선택, 2초 자동 새로고침 |
 | `GET …/report` | phase, 마지막 사람 턴, 도구 | 결과 탭 (도구 호출 보기 선택) |
 | `GET …/events` | `limit` | 훅 이벤트 탭: 개수 100/300/1000/5000 |
-| `GET/POST …/routes`, `DELETE /api/routes/<id>` | `platform`, `channel`, `trigger`, `match`, `auto_reply` | 라우트 탭 (목록·추가·삭제), 새 세션 창 |
+| `GET/POST …/routes`, `DELETE /api/routes/<id>` | `platform`, `channel`, `trigger`, `match`, `auto_reply`, `allow_bots` | 라우트 탭 (목록·추가·삭제), 새 세션 창 |
 | `GET /api/events` | `limit` | 채널 화면: 개수 20/50/200/500 |
 | `POST /api/channel/inbound` | `content`, `channel`, `author`, `mentions_bot` | 채널 화면 "넣기" + "봇 멘션" |
 | `WS /ws/channel` 메시지 넣기 | `attachments` (base64) | 채널 화면 "넣기"에 파일 첨부 (첨부가 있으면 웹소켓으로 보냄) |

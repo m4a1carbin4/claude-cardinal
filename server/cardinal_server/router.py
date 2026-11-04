@@ -33,6 +33,8 @@ def match_route(route: dict, msg: InboundMessage) -> tuple[bool, str]:
     """라우트 조건에 맞으면 (True, 트리거 뗀 본문)"""
     if route["platform"] not in ("*", msg.platform):
         return False, ""
+    if msg.from_bot and not route.get("allow_bots"):
+        return False, ""
     ch = (route.get("channel") or "").lstrip("#")
     if ch and ch not in (msg.channel_name, msg.channel_id):
         return False, ""

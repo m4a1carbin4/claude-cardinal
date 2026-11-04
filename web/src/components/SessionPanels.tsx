@@ -353,6 +353,7 @@ export function RoutesPanel({ name }: { name: string }) {
                 <th>매칭</th>
                 <th>트리거</th>
                 <th>자동 답장</th>
+                <th>봇 메시지</th>
                 <th />
               </tr>
             </thead>
@@ -364,6 +365,7 @@ export function RoutesPanel({ name }: { name: string }) {
                   <td>{r.match}</td>
                   <td>{r.trigger ? <code>{r.trigger}</code> : <span className="muted">-</span>}</td>
                   <td>{r.auto_reply ? '예' : '아니오'}</td>
+                  <td>{r.allow_bots ? '받음' : '안 받음'}</td>
                   <td>
                     <button className="ghost small danger" onClick={() => remove(r.id)}>
                       삭제

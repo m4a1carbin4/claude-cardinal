@@ -12,6 +12,7 @@ export interface Route {
   trigger: string | null;
   match: 'prefix' | 'contains' | 'regex' | 'mention';
   auto_reply: boolean;
+  allow_bots: boolean;
   enabled: boolean;
   created_at: string;
 }
@@ -252,6 +253,7 @@ export interface RouteInput {
   trigger: string | null;
   match: Route['match'];
   auto_reply: boolean;
+  allow_bots: boolean;
 }
 
 export interface CreateInput {

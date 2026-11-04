@@ -78,10 +78,12 @@ settings:
 ```json
 {"platform":"slack","channel":"dev","trigger":"!ask","match":"prefix"}
 {"platform":"slack","match":"mention","auto_reply":true}
+{"platform":"slack","channel":"rdk-alert","trigger":"Response Error","match":"contains","allow_bots":true}
 ```
 
 - `channel`은 채널 이름(`dev`, `#dev`) 또는 ID(`C0123…`). DM 은 이름이 `dm`.
 - `mention`은 봇을 `@`한 메시지. 본문에서 `<@U…>` 멘션은 떼고 넘김.
+- `allow_bots: true`면 다른 봇·앱(웹훅, 알림 연동, Workflow Builder 등)이 보낸 메시지도 받음. 기본은 사람 메시지만. 이 봇 자신은 항상 뺌 (답장 루프 방지). 웹 UI 라우트 입력의 "다른 봇 메시지도 받기".
 - 웹 UI 라우트 입력의 플랫폼에 `slack`이 있음. `platform: "*"`면 디스코드·슬랙·local 다 맞음.
 
 ## 받는 메시지
@@ -92,13 +94,15 @@ settings:
 | --- | --- |
 | `channel_id` / `channel_name` | 채널 ID / 이름 (`conversations.info`, 기억해 둠). DM 은 `dm` |
 | `guild` | 워크스페이스 이름 |
-| `author` | 표시 이름 → 실명 → 사용자 이름 순 (`users.info`, 기억해 둠) |
+| `author` | 표시 이름 → 실명 → 사용자 이름 순 (`users.info`, 기억해 둠). 봇은 `username` → `bot_profile.name` |
 | `message_id` | **답장할 스레드 ts**: 스레드 안이면 그 스레드, 채널 메시지면 그 메시지 ts, DM 은 비움 |
 | `mentions_bot` | `app_mention` 이거나 본문에 `<@봇>`이 있으면 |
-| `content` | 링크 `<url\|글>` → `url`, `<#C1\|이름>` → `#이름`, `&amp;`·`&lt;`·`&gt;` 되돌림 |
+| `content` | `text` + `attachments`(pretext, title, text, fields). `text`가 비었으면 `blocks`에서 글자만. 링크 `<url\|글>` → `url`, `<#C1\|이름>` → `#이름`, `&amp;`·`&lt;`·`&gt;` 되돌림 |
+| `from_bot` | `bot_id`가 있거나 subtype 이 `bot_message`. `allow_bots` 라우트에만 맞음 |
 | 첨부 | `url_private_download`를 봇 토큰으로 받음. `files:read`가 없으면 슬랙이 로그인 페이지(html)를 200 으로 줘서 그걸 오류로 잡음 |
 
-- 무시: 봇 메시지(자기 자신 포함, 답장 루프 방지), 수정·삭제·입장 같은 subtype (`file_share`, `thread_broadcast`는 받음).
+- 무시: 이 봇 자신의 메시지 (답장 루프 방지), 수정·삭제·입장 같은 subtype (`file_share`, `thread_broadcast`, `bot_message`는 받음).
+- 다른 봇 메시지는 받긴 하지만 `allow_bots` 없는 라우트엔 안 맞음. 이벤트 기록(`channel_events`)엔 남음.
 - 멘션은 `message`와 `app_mention`이 둘 다 오고, 슬랙이 같은 이벤트를 다시 보내기도 해서 (채널, ts)로 한 번만 처리.
 - 슬랙은 3초 안에 ack 를 받아야 해서 받자마자 ack 하고 처리함.
 
