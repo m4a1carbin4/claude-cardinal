@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@esotericsoftware/spine-webgl':
+        specifier: ~4.2.0
+        version: 4.2.120
       '@huggingface/transformers':
         specifier: 4.3.1
         version: 4.3.1(@types/node@26.6.5)
@@ -44,6 +47,12 @@ packages:
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
+
+  '@esotericsoftware/spine-core@4.2.120':
+    resolution: {integrity: sha512-X62MPnfiZTWok4Wk5Q5DqaAUBUFypKpb94IVd1W/j4eLHhg0HH3tve4HvIlkgxDpls2NokHaAtzjxX12rJknOA==}
+
+  '@esotericsoftware/spine-webgl@4.2.120':
+    resolution: {integrity: sha512-xhITm18dZ6DclPaI1jEiTVOoXYQASsubbDEs3Ik1AjmVSXdNFtvdvzLVwhPQ8eHu1OXsxtWfuW+wpGHib8V4hw==}
 
   '@huggingface/jinja@0.5.10':
     resolution: {integrity: sha512-SgS1D1bglQ94ceD4ZCL6eayUDy9uV1xuyk61OjgSxU5GJh7upqZCKII0JoTYMc6wWsg3JUgaPRX0ElQzXPk3Cw==}
@@ -767,6 +776,12 @@ snapshots:
     dependencies:
       tslib: 2.8.1
     optional: true
+
+  '@esotericsoftware/spine-core@4.2.120': {}
+
+  '@esotericsoftware/spine-webgl@4.2.120':
+    dependencies:
+      '@esotericsoftware/spine-core': 4.2.120
 
   '@huggingface/jinja@0.5.10': {}
 

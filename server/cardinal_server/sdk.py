@@ -13,6 +13,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -77,6 +78,30 @@ MASTER_PROMPT = """
 - 워커가 막히면: tmux 워커는 `session_screen` 으로 보고 `session_keys`, SDK 워커는 `session_answer`
 - 정리: `session_kill`
 사용자가 서브 에이전트를 쓰라고 따로 요청한 경우에만 예외.
+"""
+
+ADMIN_PROMPT = """
+너는 이 카디널 설치의 **관리자 세션**이다. 서버(FastAPI, {url})가 켜질 때마다 서버가 직접 띄우고, 같은 대화를 이어간다
+(같은 세션 ID, 같은 claude 대화). 서버가 꺼지면 너도 꺼지고, 다시 켜지면 이어서 돈다.
+- 카디널 소스: {repo} (작업 폴더). 문서는 docs/ (서버 흐름 docs/server.md, SDK 모드 docs/sdk-mode.md, 관리자 docs/admin-session.md)
+- 카디널 데이터: {home} (DB cardinal.db, 로그 logs/, 세션 기록 sessions/, 채널 첨부 inbox/). 읽어서 상태를 파악해도 된다
+- 모든 세션(워커·마스터, tmux·SDK)을 만들고, 지시하고, 결과를 받고, 다시 띄우고(session_restart), 끝낼 수 있다
+- 채널 라우트(어떤 디스코드·슬랙 메시지를 어느 세션에 넘길지)는 route_list / route_add / route_delete 로 관리한다
+- 서버·채널 상태는 server_status, 최근 채널 이벤트와 전달 결과는 event_list 로 본다
+- 오래 사는 세션이라 대화가 길어지면 앞부분이 요약된다. 오래 기억할 것(설정, 운영 규칙, 진행 중인 일)은
+  드라이브 /sessions/{name}/NOTES.md 에 적어 두고, 일을 시작할 때 drive_read 로 다시 읽어라
+지켜야 할 것:
+- 서버 프로세스를 끄거나 다시 띄우는 일(launchctl, autostart.sh, kill 등)은 사람이 시킬 때만. 너도 같이 꺼진다
+- 카디널 소스 수정·커밋·푸시는 사람이 시킬 때만. 실행 중인 서버는 체크아웃된 코드로 돈다
+- 다른 세션을 끝내거나(kill) 라우트를 지우기 전에, 사람이 시킨 일인지 확인해라
+스테이지: `[스테이지]`로 시작하는 메시지는 웹 스테이지 페이지({url}/stage)에서 사람이 캐릭터에게 말한 것이다.
+네 답은 캐릭터 대사로 말풍선에 한 덩어리씩 나온다. 짧게(몇 문장), 말하듯, 마크다운·표·코드블록 없이 답해라.
+문단 맨 앞에 `[emo:NN]`을 붙이면 그 문단부터 표정이 바뀐다 (안 붙이면 기본 00). 자주 쓸 것:
+  00 기본 미소, 03 눈웃음(기쁨), 11 아주 기쁨(하트), 13 뿌듯, 20·31 밝게 말하기, 32 활짝 웃음,
+  02 놀람, 25 깨달음(반짝 눈), 22 결의(반짝 눈), 21 설렘, 04 당황, 28 경악, 16·19 부끄러운 당황, 18 부끄러워 외침,
+  07·15 곤란, 09 난감한 웃음, 06 울먹, 05·14 삐짐, 26 시큰둥, 27 투덜, 12 아야(> <), 17·29·30 어지러움,
+  10 한숨, 24 하품, 23 졸음, 99 차분히 눈 감음
+긴 결과(코드, 표, 로그)는 드라이브에 쓰고 어디 있는지만 말해라
 """
 
 
@@ -202,6 +227,8 @@ class SdkSession:
         self.role: str = row["role"]
         self.cwd: str = row["cwd"]
         self.options: dict = row.get("sdk_options") or {}
+        # 관리자 세션 (서버가 띄우는 마스터, mgr.ensure_admin). 이름은 settings.admin
+        self.admin: bool = bool(self.options.get("admin"))
         self.claude_session_id: str | None = row.get("claude_session_id")
         self.client: ClaudeSDKClient | None = None
         self.alive = False
@@ -261,11 +288,14 @@ class SdkSession:
 
     def _build_options(self, resume: str | None, fresh_id: str | None) -> ClaudeAgentOptions:
         o = self.options
+        st = self.mgr.settings
         prompt = COMMON_PROMPT.format(name=self.name, role=self.role) + (MASTER_PROMPT if self.role == "master" else WORKER_PROMPT)
+        if self.admin:
+            prompt += ADMIN_PROMPT.format(name=self.name, url=st.url, repo=REPO_ROOT, home=st.home)
         if o.get("append_prompt"):
             prompt += "\n" + o["append_prompt"]
         mcp: dict[str, Any] = dict(o.get("mcp_servers") or {})
-        mcp["cardinal"] = mcp_config(self.mgr.settings, self.mgr.mcp_secret, self.id, self.role)
+        mcp["cardinal"] = mcp_config(st, self.mgr.mcp_secret, self.id, "admin" if self.admin else self.role)
         allowed = list(o.get("allowed_tools") or [])
         # 카디널 도구는 서버가 직접 처리하는 거라 묻지 않음
         allowed.append("mcp__cardinal")
@@ -293,7 +323,9 @@ class SdkSession:
             hooks={ev: [HookMatcher(hooks=[self._hook])] for ev in HOOK_EVENTS},
             include_partial_messages=bool(o.get("partial")),
             # 웹드라이브는 작업 폴더 밖이어도 묻지 않고 읽고 쓰게
-            add_dirs=[*(o.get("add_dirs") or []), os.path.realpath(self.mgr.settings.drive)],
+            # 관리자는 카디널 데이터(DB, 로그)도
+            add_dirs=[*(o.get("add_dirs") or []), os.path.realpath(st.drive),
+                      *([os.path.realpath(st.home)] if self.admin else [])],
             env=env,
             stderr=lambda line: log.debug("[%s] %s", self.name, line.rstrip()),
         )
@@ -311,17 +343,37 @@ class SdkSession:
             kw["session_id"] = fresh_id
         return ClaudeAgentOptions(**kw)
 
+    def _transcript_exists(self) -> bool:
+        """이어갈 claude 대화 파일이 있는지. 모르면(경로 계산이 안 맞을 수도) 있다고 봄"""
+        if self.transcript_path:
+            return Path(self.transcript_path).exists()
+        base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+        if not base.is_dir():
+            return True
+        # claude 는 작업 폴더 경로의 영문·숫자 아닌 글자를 - 로 바꾼 폴더에 둠
+        return (base / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(self.cwd)) / f"{self.claude_session_id}.jsonl").exists()
+
     async def start(self, resume: bool) -> None:
         """resume=True 면 마지막 claude 세션을 이어서, 아니면 새 대화"""
         self._stopping = False
         fresh = None if resume and self.claude_session_id else str(uuid.uuid4())
         if fresh:
             self.claude_session_id = fresh
+        elif self.admin and not self._transcript_exists():
+            # 관리자는 대화 파일이 없어져도 같은 세션 ID 로 새 대화 (ID 가 바뀌지 않게)
+            log.warning("[%s] 이어갈 대화 파일이 없음 → 같은 ID 로 새 대화: %s", self.name, self.claude_session_id)
+            fresh = self.claude_session_id
         self._set("starting", "Create" if fresh else "Resume", None, None)
         client = ClaudeSDKClient(self._build_options(None if fresh else self.claude_session_id, fresh))
         try:
             await client.connect()
         except Exception as e:
+            if self.admin and not fresh:
+                # 이어가기가 깨졌으면 (대화 파일 손상 등) 관리자는 새 ID 로라도 뜸. 서버가 켜져 있는 동안 관리자는 있어야 함
+                log.warning("[%s] 이어서 시작 실패 → 새 대화로: %s", self.name, e)
+                self.claude_session_id = str(uuid.uuid4())
+                self.transcript_path = None
+                return await self.start(resume=False)
             self.alive = False
             self._set("ended", "StartFailed", f"시작 실패: {e}")
             raise SdkError(f"SDK 세션 시작 실패: {e}") from e
@@ -409,6 +461,9 @@ class SdkSession:
                 waiting.started.set()
             elif not self.open_turns:
                 self._start_agent_turn().started.set()
+            # 지금 도는 턴이 어디서 온 건지 (스테이지 페이지가 자기 턴의 답만 읽게)
+            if t := waiting or self._current():
+                self._emit({"type": "turn_start", "origin": t.origin, "prompt": _clip(t.prompt, 200)})
             if self.state != "waiting":
                 self._set("busy", "TurnStart", None)
             return
@@ -700,7 +755,47 @@ class SdkManager:
             sess.state, sess.event = "ended", "SessionEnd"
             if (row.get("sdk_options") or {}).get("resume_on_start"):
                 self._resume.append(sess)
+        self.ensure_admin()
         self.on_change()
+
+    def ensure_admin(self) -> None:
+        """관리자 세션(settings.admin): 없으면 만들고, 서버 켤 때마다 같은 대화로 이어서 띄움 (resume_when_serving).
+        카디널 저장소를 작업 폴더로 쓰는 마스터. 기록(행)은 하나를 계속 씀 → 세션 ID 가 안 바뀜"""
+        name = self.settings.admin
+        if not name:
+            return
+        row = self.db.session_by_name(name)
+        if row and row.get("backend") != "sdk":
+            log.warning("관리자 세션 이름 %s 을(를) tmux 세션이 쓰는 중 → 관리자 세션 안 띄움 (CARDINAL_ADMIN 으로 이름 바꾸기)", name)
+            return
+        if not row:
+            row = {"id": str(uuid.uuid4()), "name": name, "role": "master", "cwd": str(REPO_ROOT), "created_at": now(),
+                   "claude_session_id": None, "parent_id": None, "parent_name": None,
+                   "sdk_options": {"admin": True, "resume_on_start": True}}
+            self.db.insert_sdk_session(row)
+            self.db.update_sdk_session(row["id"], alive=False, state="ended", state_at=now(), last_event="SessionEnd",
+                                       detail="관리자 세션: 서버가 요청을 받기 시작하면 뜸")
+            log.info("관리자 세션 만듦: %s (%s)", name, row["id"])
+            row = self.db.session_by_id(row["id"]) or row
+        else:
+            opts = row.get("sdk_options") or {}
+            if not opts.get("admin") or not opts.get("resume_on_start") or row["role"] != "master":
+                # 같은 이름의 SDK 세션이 이미 있으면 그걸 관리자로 (대화는 그대로 이어감)
+                self.db.update_sdk_session(row["id"], sdk_options={**opts, "admin": True, "resume_on_start": True})
+                self.db.exec("UPDATE sessions SET role='master' WHERE id=?", (row["id"],))
+                row = self.db.session_by_id(row["id"]) or row
+        sess = self.sessions.get(name)
+        if not sess or sess.id != row["id"] or not sess.admin:
+            sess = SdkSession(self, row)
+            sess.state, sess.event = "ended", "SessionEnd"
+            self.sessions[name] = sess
+        if sess not in self._resume:
+            self._resume.append(sess)
+
+    @property
+    def admin(self) -> "SdkSession | None":
+        s = self.sessions.get(self.settings.admin or "")
+        return s if s and s.admin else None
 
     async def wait_serving(self) -> None:
         """이 서버가 요청을 받기 시작할 때까지 (lifespan 시작 단계에선 아직 안 받음)"""
@@ -732,6 +827,8 @@ class SdkManager:
 
     async def create(self, name: str, role: str, cwd: str, options: dict, parent: dict | None,
                      prompt: str | None) -> SdkSession:
+        if name == self.settings.admin:
+            raise SdkError(f"관리자 세션 이름: {name} (서버가 띄움)")
         async with self._create_locks.setdefault(name, asyncio.Lock()):
             old = self.sessions.get(name)
             if old and old.alive:
@@ -763,6 +860,12 @@ class SdkManager:
 
     async def restart(self, name: str, resume: bool = True, options: dict | None = None) -> SdkSession:
         sess = self.get(name)
+        if sess.admin:
+            # 관리자는 같은 대화를 이어감. admin / resume_on_start 는 못 끔
+            if not resume:
+                raise SdkError("관리자 세션은 새 대화로 다시 띄울 수 없음 (같은 대화를 이어감)")
+            if options:
+                options = {**options, "admin": True, "resume_on_start": True}
         if sess.alive:
             await sess.stop("restart")
         if options:
@@ -774,6 +877,8 @@ class SdkManager:
 
     async def kill(self, name: str, purge: bool = False) -> None:
         sess = self.get(name)
+        if sess.admin and purge:
+            raise SdkError("관리자 세션은 지울 수 없음 (끄기만 됨, 서버를 다시 켜면 이어서 뜸. 끄려면 CARDINAL_ADMIN=0)")
         if sess.alive:
             await sess.stop("kill")
         if purge:

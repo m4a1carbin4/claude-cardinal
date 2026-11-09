@@ -13,7 +13,9 @@ export default defineConfig({
     proxy: {
       '/api': target,
       '/ws': { target, ws: true },
+      '/stage-assets': target,
     },
   },
-  build: { outDir: 'dist', emptyOutDir: true },
+  // 메인 화면 + 스테이지 페이지 (/stage, docs/stage.md)
+  build: { outDir: 'dist', emptyOutDir: true, rollupOptions: { input: { main: 'index.html', stage: 'stage.html' } } },
 });

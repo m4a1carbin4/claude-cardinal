@@ -5,6 +5,7 @@
 tmux + Claude Code TUI 대신, **서버 프로세스 안에서 Claude Agent SDK(`claude-agent-sdk`, Python)로 세션을 직접 돌리는** 모드. 화면을 긁거나 키를 누르지 않고 메시지를 주고받으니까, 음성 인식/합성·모션 같은 프로그램이 붙기 좋음.
 
 - 세션은 서버와 같이 삶. 서버가 꺼지면 세션도 끝나고, `restart`로 대화를 이어서 다시 띄움 (`resume_on_start`면 서버 켜질 때 자동)
+- 서버가 관리자 세션 `cardinal`(마스터)을 직접 띄우고 켤 때마다 같은 대화로 이어감 → [관리자 세션](admin-session.md)
 - CLI(`cardinal ...`)로는 안 다룸. **FastAPI(REST + 웹소켓)로만** 만들고 보내고 받음
 - 채널(디스코드, local)과 라우트는 tmux 세션과 **같은 것**을 그대로 씀. 이벤트 전달, 자동 답장, 직접 답장 다 됨
 - 기본 권한 모드는 `auto`. 질문(AskUserQuestion)·권한 확인은 사람한테 넘겨서 API로 답을 받음

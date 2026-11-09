@@ -59,6 +59,7 @@ export function setToken(t: string | null) {
 }
 
 export const hasToken = () => !!token;
+export const currentToken = () => token;
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {

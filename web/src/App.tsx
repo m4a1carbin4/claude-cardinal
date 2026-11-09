@@ -137,6 +137,11 @@ export default function App() {
               <span className="dot info" /> SDK 모드 · {health.sdk.alive}
             </span>
           )}
+          {health?.admin && (
+            <a className="chip" href="/stage" target="_blank" rel="noopener" title={`관리자 세션(${health.admin.name})과 캐릭터로 대화`}>
+              <span className={`dot ${health.admin.alive ? 'ok' : 'muted'}`} /> 스테이지
+            </a>
+          )}
           {health && <ChannelChip label="디스코드" status={health.channels.discord} />}
           {health?.channels.slack && health.channels.slack !== 'off' && <ChannelChip label="슬랙" status={health.channels.slack} />}
           <button className="ghost small" onClick={() => setNeedToken(true)} title="서버 토큰 (CARDINAL_TOKEN)">

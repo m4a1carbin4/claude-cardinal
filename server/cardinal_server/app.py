@@ -417,9 +417,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return s
 
     def pub(row: dict | None) -> dict | None:
-        """API 로 내보내는 세션 행: sdk 옵션의 env/헤더 값은 가림"""
+        """API 로 내보내는 세션 행: sdk 옵션의 env/헤더 값은 가림. admin = 관리자 세션인지"""
         if row and row.get("sdk_options") is not None:
             row = {**row, "sdk_options": redact_options(row["sdk_options"])}
+        if row:
+            row = {**row, "admin": bool((row.get("sdk_options") or {}).get("admin")) and row["name"] == settings.admin}
         return row
 
     def sess_err(e: Exception) -> HTTPException:
@@ -456,7 +458,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sessions": len(db.sessions()),
             "sdk": {"enabled": settings.sdk, "default_backend": "sdk" if settings.sdk else "tmux",
                     "alive": sum(1 for x in sdk_mgr.sessions.values() if x.alive)},
+            "admin": admin_status(),
         }
+
+    def admin_status() -> dict | None:
+        a = sdk_mgr.admin if settings.sdk else None
+        return {"name": a.name, "state": a.state, "alive": a.alive} if a else None
 
     # ---------- 세션 ----------
 
@@ -556,11 +563,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if body.sdk:
                 raise HTTPException(400, "tmux 세션엔 sdk 옵션이 없음")
             try:
-                await cli.run("revive", name, timeout=120, env={"CARDINAL_SERVER_URL": settings.url})
-            except CliError as e:
-                raise cli_call(e)
-            await ingestor.sync()
-            return pub(db.session_by_name(name))
+                return pub(await sessions.restart(name))
+            except SessionError as e:
+                raise sess_err(e)
         sess = sdk_or_400(name)
         if not settings.sdk:
             raise HTTPException(400, "SDK 모드가 꺼져 있음 (cardinal-server --sdk)")
@@ -883,11 +888,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         await subscribe(ws, channel_hub, None, on_text)
 
+    # ---------- 스테이지 (관리자 세션 캐릭터 페이지, docs/stage.md) ----------
+
+    @app.get("/stage", include_in_schema=False)
+    async def stage_page():
+        page = WEB_DIST / "stage.html"
+        return FileResponse(page) if page.is_file() else HTMLResponse(NOT_BUILT)
+
+    # 캐릭터·배경 파일. 저작권 있는 게임 리소스라 저장소에 안 넣고 CARDINAL_STAGE_ASSETS 에서 내려줌.
+    # spine 로더가 헤더를 못 붙여서 토큰은 쿼리 말고 쿠키(cardinal_token, 스테이지 페이지가 심음)로도 받음
+    @app.get("/stage-assets/{path:path}", include_in_schema=False)
+    async def stage_assets(path: str, request: Request):
+        if not (token_ok(request.query_params.get("token"), request.headers.get("authorization"))
+                or token_ok(request.cookies.get("cardinal_token"), None)):
+            raise HTTPException(401, "unauthorized")
+        root = settings.stage_assets.resolve()
+        f = (root / path).resolve()
+        if root in f.parents and f.is_file():
+            return FileResponse(f)
+        raise HTTPException(404, "not found")
+
     # 웹 UI 정적 파일 (assets/*, banner.png 등). 맨 마지막에 등록해서 API 라우트를 가로채지 않음.
     # 빌드를 나중에 해도 서버 재시작 없이 바로 보이게 요청 때마다 파일을 찾음
     @app.get("/{path:path}", include_in_schema=False)
     async def web_static(path: str):
-        if path.startswith(("api/", "ws/")):
+        if path.startswith(("api/", "ws/", "stage-assets/")):
             raise HTTPException(404, "not found")
         f = (WEB_DIST / path).resolve()
         # dist 밖으로 나가는 경로(../) 차단

@@ -127,6 +127,7 @@ button.danger:hover:not(:disabled) { border-color: var(--err); }
 .badge.muted { opacity: 0.8; }
 .role { font-size: 0.72rem; font-weight: 600; padding: 0 6px; border-radius: 4px; background: var(--surface-2); color: var(--muted); }
 .role.master { background: var(--info-bg); color: var(--info); }
+.role.admin { background: var(--warn-bg); color: var(--warn); }
 
 .alert { border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 0.9rem; white-space: pre-wrap; }
 .alert.err { background: var(--err-bg); color: var(--err); }
@@ -145,6 +146,8 @@ button.danger:hover:not(:disabled) { border-color: var(--err); }
 .views button.on { background: var(--surface-2); color: var(--text); font-weight: 600; }
 .status-chips { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--muted); padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; }
+a.chip { text-decoration: none; }
+a.chip:hover { color: var(--text); border-color: var(--accent); }
 
 .body { flex: 1; display: grid; grid-template-columns: 280px 1fr; min-height: 0; }
 .sidebar { border-right: 1px solid var(--line); background: var(--surface); padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }

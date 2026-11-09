@@ -5,6 +5,7 @@
 Instead of tmux + the Claude Code TUI, this mode **runs sessions directly inside the server process with the Claude Agent SDK (`claude-agent-sdk`, Python)**. Messages go in and out as data (no screen scraping, no key presses), which suits programs such as speech recognition/synthesis or motion.
 
 - Sessions live with the server. When the server stops they end; `restart` brings them back and continues the conversation (`resume_on_start` does it automatically on server start)
+- The server brings up the admin session `cardinal` (a master) itself and continues the same conversation on every start → [admin session](admin-session.en.md)
 - Not handled by the CLI (`cardinal ...`). Created, driven and read **only through FastAPI (REST + WebSocket)**
 - Channels (Discord, local) and routes are **the same ones** tmux sessions use. Delivery, auto reply and direct replies all work
 - Default permission mode is `auto`. Questions (AskUserQuestion) and permission checks are handed to a human and answered through the API
