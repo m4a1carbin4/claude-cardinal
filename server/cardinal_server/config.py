@@ -25,6 +25,7 @@ class Settings:
     drive: Path  # 웹드라이브 (사람·세션이 같이 쓰는 파일 공간, drive.py)
     drive_max_upload: int  # 웹에서 올리는 파일 하나 한도 (바이트)
     admin: str | None  # 관리자 세션 이름 (CARDINAL_ADMIN, 기본 cardinal). SDK 모드에서 서버가 띄우는 마스터. None = 끔
+    stage_assets: Path  # 스테이지 페이지(/stage) 캐릭터·배경 파일 (CARDINAL_STAGE_ASSETS). 저장소엔 안 넣음
 
     @property
     def sessions_dir(self) -> Path:
@@ -63,4 +64,5 @@ def load() -> Settings:
         drive=Path(os.environ.get("CARDINAL_DRIVE", home / "drive")).expanduser(),
         drive_max_upload=int(os.environ.get("CARDINAL_DRIVE_MAX_MB", "1024")) * 1024 * 1024,
         admin=_admin_name(os.environ.get("CARDINAL_ADMIN", "cardinal")),
+        stage_assets=Path(os.environ.get("CARDINAL_STAGE_ASSETS", home / "stage-assets")).expanduser(),
     )

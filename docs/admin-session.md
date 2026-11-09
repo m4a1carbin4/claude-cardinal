@@ -25,6 +25,8 @@
 | 다른 세션이 `session_kill` | 안 됨 (사람만 웹 UI/API 로) | 마스터가 할 수 있음 |
 | 이름 | 예약됨. 다른 세션은 이 이름으로 못 만듦 | |
 
+캐릭터로 말 걸기: [스테이지](stage.md) (`/stage`).
+
 웹 UI 에는 `admin` 배지가 붙고, `GET /api/health`에 `admin: {name, state, alive}`가 나옴. 세션 행에는 `admin: true`.
 
 ## 관리 도구 (`/mcp/admin`에만)

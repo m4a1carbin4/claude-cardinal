@@ -25,6 +25,8 @@
 | `session_kill` from another session | no (humans only, via web UI/API) | masters can |
 | Name | reserved. No other session can be created with it | |
 
+Talking through a character: [stage](stage.en.md) (`/stage`).
+
 The web UI shows an `admin` badge, `GET /api/health` has `admin: {name, state, alive}`, and session rows have `admin: true`.
 
 ## Admin tools (only on `/mcp/admin`)

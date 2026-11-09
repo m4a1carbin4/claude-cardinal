@@ -888,11 +888,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         await subscribe(ws, channel_hub, None, on_text)
 
+    # ---------- 스테이지 (관리자 세션 캐릭터 페이지, docs/stage.md) ----------
+
+    @app.get("/stage", include_in_schema=False)
+    async def stage_page():
+        page = WEB_DIST / "stage.html"
+        return FileResponse(page) if page.is_file() else HTMLResponse(NOT_BUILT)
+
+    # 캐릭터·배경 파일. 저작권 있는 게임 리소스라 저장소에 안 넣고 CARDINAL_STAGE_ASSETS 에서 내려줌.
+    # spine 로더가 헤더를 못 붙여서 토큰은 쿼리 말고 쿠키(cardinal_token, 스테이지 페이지가 심음)로도 받음
+    @app.get("/stage-assets/{path:path}", include_in_schema=False)
+    async def stage_assets(path: str, request: Request):
+        if not (token_ok(request.query_params.get("token"), request.headers.get("authorization"))
+                or token_ok(request.cookies.get("cardinal_token"), None)):
+            raise HTTPException(401, "unauthorized")
+        root = settings.stage_assets.resolve()
+        f = (root / path).resolve()
+        if root in f.parents and f.is_file():
+            return FileResponse(f)
+        raise HTTPException(404, "not found")
+
     # 웹 UI 정적 파일 (assets/*, banner.png 등). 맨 마지막에 등록해서 API 라우트를 가로채지 않음.
     # 빌드를 나중에 해도 서버 재시작 없이 바로 보이게 요청 때마다 파일을 찾음
     @app.get("/{path:path}", include_in_schema=False)
     async def web_static(path: str):
-        if path.startswith(("api/", "ws/")):
+        if path.startswith(("api/", "ws/", "stage-assets/")):
             raise HTTPException(404, "not found")
         f = (WEB_DIST / path).resolve()
         # dist 밖으로 나가는 경로(../) 차단

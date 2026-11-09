@@ -230,6 +230,7 @@ export interface Health {
   channels: { local: string; discord: string; slack?: string };
   sessions: number;
   sdk?: { enabled: boolean; default_backend: Backend; alive: number };
+  admin?: { name: string; state: State; alive: boolean } | null; // 관리자 세션 (SDK 모드)
 }
 
 export interface SendResult {
