@@ -77,10 +77,12 @@ export function MicInput({ onText, disabled }: { onText: (text: string, autoSend
         setNote('너무 짧음');
         return;
       }
+      // 길이는 먼저 재 둠 (transcribe 가 버퍼를 워커로 넘겨서 그 뒤엔 0)
+      const secs = audio.length / 16_000;
       const { text, ms } = await transcribe(audio, settings.model, settings.language);
       if (!text) setNote('인식된 말 없음');
       else {
-        setNote(`${(audio.length / 16_000).toFixed(1)}초 → ${(ms / 1000).toFixed(1)}초에 인식`);
+        setNote(`${secs.toFixed(1)}초 → ${(ms / 1000).toFixed(1)}초에 인식`);
         onText(text, settings.autoSend);
       }
     } catch (e) {
