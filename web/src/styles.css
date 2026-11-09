@@ -127,6 +127,7 @@ button.danger:hover:not(:disabled) { border-color: var(--err); }
 .badge.muted { opacity: 0.8; }
 .role { font-size: 0.72rem; font-weight: 600; padding: 0 6px; border-radius: 4px; background: var(--surface-2); color: var(--muted); }
 .role.master { background: var(--info-bg); color: var(--info); }
+.role.admin { background: var(--warn-bg); color: var(--warn); }
 
 .alert { border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 0.9rem; white-space: pre-wrap; }
 .alert.err { background: var(--err-bg); color: var(--err); }

@@ -59,6 +59,7 @@ export interface Session {
   role: Role;
   backend: Backend;
   sdk_options: SdkOptions | null; // backend=sdk 일 때만
+  admin?: boolean; // 관리자 세션 (서버가 켤 때마다 같은 대화로 띄우는 마스터)
   mcp: boolean; // 카디널 MCP(mcp__cardinal__*)에 붙어 있음. false 면 서버 없이 띄운 세션이라 모델이 CLI 를 씀
   tmux: string;
   cwd: string;

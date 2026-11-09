@@ -67,6 +67,8 @@ class Sessions:
         backend = backend or ("sdk" if self.settings.sdk else "tmux")
         if not NAME_RE.match(name):
             raise SessionError(f"세션 이름 규칙 위반: {name} (영문/숫자/-/_ , 최대 48자)")
+        if name == self.settings.admin and self.settings.sdk:
+            raise SessionError(f"관리자 세션 이름: {name} (서버가 띄움, 다른 세션엔 못 씀)")
         existing = self.db.session_by_name(name)
         if backend == "sdk":
             if not self.settings.sdk:
@@ -143,10 +145,34 @@ class Sessions:
         except CliError as e:
             raise SessionError(str(e))
 
+    def is_admin(self, name: str) -> bool:
+        return bool(self.sdk and self.sdk.admin and self.sdk.admin.name == name)
+
+    async def restart(self, name: str, resume: bool = True) -> dict:
+        """끝난 세션 다시 띄우기. sdk 는 (기본) 대화 이어서, tmux 는 tmux 가 없어진 것만 같은 대화로 (cardinal revive)"""
+        if self.backend_of(name) == "sdk":
+            self.sdk_session(name)
+            try:
+                sess = await self._sdk().restart(name, resume=resume)
+            except SdkError as e:
+                raise SessionError(str(e))
+            return self.db.session_by_id(sess.id) or {}
+        if not self.db.session_by_name(name):
+            raise SessionError(f"모르는 세션: {name}")
+        try:
+            await self.cli.run("revive", name, timeout=120, env={"CARDINAL_SERVER_URL": self.settings.url})
+        except CliError as e:
+            raise SessionError(str(e))
+        await self.ingestor.sync()
+        return self.db.session_by_name(name) or {}
+
     async def kill(self, name: str, purge: bool = False) -> None:
         if self.backend_of(name) == "sdk":
             self.sdk_session(name)
-            await self._sdk().kill(name, purge)
+            try:
+                await self._sdk().kill(name, purge)
+            except SdkError as e:
+                raise SessionError(str(e))
             return
         try:
             await self.cli.run("kill", name, *(["--purge"] if purge else []))

@@ -61,6 +61,7 @@ Claude Code 세션 여러 개 띄워놓고 쓰다 보니 관리가 귀찮아서,
 - [카디널 서버: DB, 메시지 채널](docs/server.md) ([English](docs/server.en.md))
 - [웹 UI](docs/web-ui.md) ([English](docs/web-ui.en.md))
 - [SDK 모드: tmux 없이 서버 안 Agent SDK 세션](docs/sdk-mode.md) ([English](docs/sdk-mode.en.md))
+- [관리자 세션: 서버가 켤 때마다 같은 대화로 띄우는 마스터 `cardinal`](docs/admin-session.md) ([English](docs/admin-session.en.md))
 - [카디널 MCP: 세션 안 모델이 카디널을 다루는 길](docs/mcp.md) ([English](docs/mcp.en.md))
 
 ## 할 일

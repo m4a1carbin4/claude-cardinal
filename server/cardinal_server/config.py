@@ -24,6 +24,7 @@ class Settings:
     workspace: Path  # 작업 폴더를 안 주면 쓰는 고정 워크스페이스 (CLI 와 같은 곳)
     drive: Path  # 웹드라이브 (사람·세션이 같이 쓰는 파일 공간, drive.py)
     drive_max_upload: int  # 웹에서 올리는 파일 하나 한도 (바이트)
+    admin: str | None  # 관리자 세션 이름 (CARDINAL_ADMIN, 기본 cardinal). SDK 모드에서 서버가 띄우는 마스터. None = 끔
 
     @property
     def sessions_dir(self) -> Path:
@@ -37,6 +38,11 @@ class Settings:
     def url(self) -> str:
         host = "127.0.0.1" if self.host in ("0.0.0.0", "::") else self.host
         return f"http://{host}:{self.port}"
+
+
+def _admin_name(v: str) -> str | None:
+    v = v.strip()
+    return None if v.lower() in ("", "0", "false", "off") else v
 
 
 def load() -> Settings:
@@ -56,4 +62,5 @@ def load() -> Settings:
         workspace=Path(os.environ.get("CARDINAL_WORKSPACE", home / "workspace")).expanduser(),
         drive=Path(os.environ.get("CARDINAL_DRIVE", home / "drive")).expanduser(),
         drive_max_upload=int(os.environ.get("CARDINAL_DRIVE_MAX_MB", "1024")) * 1024 * 1024,
+        admin=_admin_name(os.environ.get("CARDINAL_ADMIN", "cardinal")),
     )

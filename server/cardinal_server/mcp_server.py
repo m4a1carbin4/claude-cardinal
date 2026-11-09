@@ -3,6 +3,7 @@
 서버가 떠 있으면 모델은 CLI 대신 이 도구들만 씀 (CLI 는 사람이 직접 개입할 때용).
 - /mcp/worker: reply, session_list, 있는 워커 부르기(session_send/wait/report), 웹드라이브(drive_*)
 - /mcp/master: 위 + 세션 만들기/정리/화면/키/질문 답하기. 마스터는 워커·마스터 누구든 부름
+- /mcp/admin: 위 + 세션 다시 띄우기, 채널 라우트 관리, 서버 상태, 채널 이벤트. 관리자 세션(settings.admin)만
 워커는 새 세션을 못 만들고, 이미 있는 워커에게만 일을 맡김 (마스터는 못 부름).
 누가 불렀는지는 헤더로: X-Cardinal-Instance (세션 고유 키) + X-Cardinal-Key (서버 비밀 키로 만든 HMAC).
 CLI 도 같은 비밀 키 파일(~/.cardinal/mcp.key)로 키를 만들어 tmux 세션에 넣어줌.
@@ -51,6 +52,12 @@ MASTER_INSTRUCTIONS = WORKER_INSTRUCTIONS + (
     "session_send / session_wait / session_report 로 지시하고 결과를 받음 (마스터는 다른 마스터도 부를 수 있음)."
 )
 
+ADMIN_INSTRUCTIONS = MASTER_INSTRUCTIONS + (
+    " 관리자는 이 카디널 설치 전체를 관리함: 세션 다시 띄우기(session_restart), 채널 라우트(route_list/route_add/route_delete), "
+    "서버·채널 상태(server_status), 최근 채널 이벤트와 전달 결과(event_list)."
+)
+LEVELS = ("worker", "master", "admin")
+
 
 def load_key(home: Path) -> bytes:
     """서버 비밀 키. 없으면 만듦 (CLI 도 이 파일을 읽어 tmux 세션용 키를 만듦)"""
@@ -76,7 +83,7 @@ def mcp_config(settings: Settings, secret: bytes, instance_id: str, role: str) -
     """세션에 붙일 MCP 서버 설정 (SDK mcp_servers / claude --mcp-config 의 한 항목)"""
     return {
         "type": "http",
-        "url": f"{settings.url}/mcp/{'master' if role == 'master' else 'worker'}",
+        "url": f"{settings.url}/mcp/{role if role in LEVELS else 'worker'}",
         "headers": {"X-Cardinal-Instance": instance_id, "X-Cardinal-Key": session_key(secret, instance_id)},
     }
 
@@ -98,27 +105,28 @@ class CardinalMcp:
         self._waits: dict[str, list[str]] = {}
         self.worker = MCPServer("cardinal", instructions=WORKER_INSTRUCTIONS)
         self.master = MCPServer("cardinal", instructions=MASTER_INSTRUCTIONS)
+        self.admin = MCPServer("cardinal", instructions=ADMIN_INSTRUCTIONS)
         self._register()
         # stateless: 서버가 재시작돼도 세션 쪽 MCP 연결 상태가 안 꼬임 (요청마다 독립)
-        self.worker_app = self._guard(self.worker.streamable_http_app(streamable_http_path="/", stateless_http=True),
-                                      master_only=False)
-        self.master_app = self._guard(self.master.streamable_http_app(streamable_http_path="/", stateless_http=True),
-                                      master_only=True)
+        self.apps = {
+            level: self._guard(srv.streamable_http_app(streamable_http_path="/", stateless_http=True), level)
+            for level, srv in (("worker", self.worker), ("master", self.master), ("admin", self.admin))
+        }
 
     async def app(self, scope, receive, send):
-        """/mcp 에 붙는 ASGI 앱. /mcp/worker, /mcp/master (끝 / 있어도 없어도) → 각 MCP 서버의 / 로"""
+        """/mcp 에 붙는 ASGI 앱. /mcp/worker, /mcp/master, /mcp/admin (끝 / 있어도 없어도) → 각 MCP 서버의 / 로"""
         rest = scope["path"][len(scope.get("root_path", "")):] if scope["path"].startswith(scope.get("root_path", "")) else scope["path"]
-        target = {"worker": self.worker_app, "master": self.master_app}.get(rest.strip("/").removeprefix("mcp/"))
+        target = self.apps.get(rest.strip("/").removeprefix("mcp/"))
         if target is None or scope["type"] not in ("http", "websocket"):
             if scope["type"] == "http":
                 await send({"type": "http.response.start", "status": 404, "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"cardinal mcp: /mcp/worker or /mcp/master"})
+                await send({"type": "http.response.body", "body": b"cardinal mcp: /mcp/worker, /mcp/master or /mcp/admin"})
             return
         await target({**scope, "path": "/", "raw_path": b"/", "root_path": ""}, receive, send)
 
     @contextlib.asynccontextmanager
     async def run(self):
-        async with self.worker.session_manager.run(), self.master.session_manager.run():
+        async with self.worker.session_manager.run(), self.master.session_manager.run(), self.admin.session_manager.run():
             yield
 
     # ---------- 인증 ----------
@@ -133,7 +141,17 @@ class CardinalMcp:
             row = self.db.session_by_id(instance_id)
         return row if row and not row.get("deleted_at") else None
 
-    def _guard(self, app, master_only: bool):
+    def is_admin(self, row: dict) -> bool:
+        """관리자 세션: 서버가 띄운 SDK 마스터 (settings.admin 이름 + sdk_options.admin)"""
+        return (bool(self.settings.admin) and row["name"] == self.settings.admin and row.get("backend") == "sdk"
+                and row["role"] == "master" and bool((row.get("sdk_options") or {}).get("admin")))
+
+    def _allowed(self, row: dict, level: str) -> bool:
+        if level == "admin":
+            return self.is_admin(row)
+        return level == "worker" or row["role"] == "master"
+
+    def _guard(self, app, level: str):
         async def asgi(scope, receive, send):
             if scope["type"] == "http" and scope["method"] == "GET":
                 # 서버 → 세션 알림 스트림(GET SSE)은 안 씀. 열어두게 하면 클라이언트(claude)가 연결을 계속 잡고 있어서
@@ -145,9 +163,9 @@ class CardinalMcp:
             if scope["type"] == "http":
                 h = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
                 row = await self._caller_row(h.get(INSTANCE_HEADER), h.get(KEY_HEADER))
-                if row is None or (master_only and row["role"] != "master"):
+                if row is None or not self._allowed(row, level):
                     status = 401 if row is None else 403
-                    body = b"cardinal mcp: unknown session" if row is None else b"cardinal mcp: master only"
+                    body = b"cardinal mcp: unknown session" if row is None else f"cardinal mcp: {level} only".encode()
                     await send({"type": "http.response.start", "status": status,
                                 "headers": [(b"content-type", b"text/plain")]})
                     await send({"type": "http.response.body", "body": body})
@@ -166,7 +184,7 @@ class CardinalMcp:
     # ---------- 도구 ----------
 
     def _register(self) -> None:
-        for srv in (self.worker, self.master):
+        for srv in (self.worker, self.master, self.admin):
             srv.add_tool(self.reply, name="reply", description=(
                 "외부 채널 이벤트([cardinal:event <ID>])에 답장. 응답 텍스트만으로는 전달되지 않으니 반드시 이걸로 보냄. "
                 "files: 첨부할 로컬 파일 경로 (작업 폴더 기준 상대 경로 가능, 최대 10개·각 10MB)"))
@@ -190,7 +208,7 @@ class CardinalMcp:
                 "로컬 파일/폴더를 웹드라이브로 옮김 (사람이 웹 UI 에서 받아 갈 수 있음). 기본은 이동이라 로컬 원본은 없어짐 "
                 "(keep_source=true 면 복사). src 상대 경로는 작업 폴더 기준. path 를 안 주면 너의 세션 폴더에 같은 이름으로, "
                 "/ 로 끝나거나 있는 폴더면 그 안으로"))
-        for srv, who in ((self.worker, "이미 있는 워커 세션"), (self.master, "세션")):
+        for srv, who in ((self.worker, "이미 있는 워커 세션"), (self.master, "세션"), (self.admin, "세션")):
             srv.add_tool(self.session_send, name="session_send", description=(
                 f"{who}에 지시 보내기. 작업 중이면 끝난 뒤 차례로 들어감. wait=true(기본)면 그 턴의 응답(last)까지 기다림. "
                 "오래 걸릴 일은 wait=false 로 보내고 session_wait 로 기다려도 됨. 서로 기다리게 되는 호출(교착)은 거부됨. "
@@ -199,20 +217,35 @@ class CardinalMcp:
                 f"{who}가 지금 하는 일을 끝낼 때까지 기다린 뒤 결과 보고를 돌려줌 (질문/권한 대기에 걸리면 바로 돌려줌)"))
             srv.add_tool(self.session_report, name="session_report", description=(
                 f"{who} 결과 보고: 살아있는지, 작업중/완료/중단, 마지막 사람 턴의 지시와 응답 전체, 답 기다리는 질문(SDK)"))
-        m = self.master
-        m.add_tool(self.session_new, name="session_new", description=(
-            "독립 워커 세션 만들기 (내장 서브 에이전트 대신). cwd 를 안 주면 너와 같은 작업 폴더, backend 를 안 주면 너와 같은 방식. "
-            "prompt 를 주면 바로 첫 지시를 보내고, wait=true 면 그 턴의 응답까지 기다려 돌려줌. "
-            "attachments: 첫 지시에 붙일 웹드라이브 경로 목록"))
-        m.add_tool(self.session_kill, name="session_kill",
-                   description="세션 끝내기 (purge=true 면 기록도 삭제 표시)")
-        m.add_tool(self.session_screen, name="session_screen", description=(
-            "tmux 세션의 지금 화면 텍스트 (승인 다이얼로그 등 확인용). lines 로 스크롤백 추가"))
-        m.add_tool(self.session_keys, name="session_keys", description=(
-            "tmux 세션에 키 보내기 (예: [\"Down\", \"Enter\"], [\"Escape\"]). 승인 다이얼로그 처리용"))
-        m.add_tool(self.session_answer, name="session_answer", description=(
-            "SDK 세션의 질문/권한 확인에 답하기 (session_report 의 pending 참고). "
-            "질문: answers={질문 텍스트: 고른 답}. 권한: allow=true/false (+ message)"))
+        for m in (self.master, self.admin):
+            m.add_tool(self.session_new, name="session_new", description=(
+                "독립 워커 세션 만들기 (내장 서브 에이전트 대신). cwd 를 안 주면 너와 같은 작업 폴더, backend 를 안 주면 너와 같은 방식. "
+                "prompt 를 주면 바로 첫 지시를 보내고, wait=true 면 그 턴의 응답까지 기다려 돌려줌. "
+                "attachments: 첫 지시에 붙일 웹드라이브 경로 목록"))
+            m.add_tool(self.session_kill, name="session_kill",
+                       description="세션 끝내기 (purge=true 면 기록도 삭제 표시)")
+            m.add_tool(self.session_screen, name="session_screen", description=(
+                "tmux 세션의 지금 화면 텍스트 (승인 다이얼로그 등 확인용). lines 로 스크롤백 추가"))
+            m.add_tool(self.session_keys, name="session_keys", description=(
+                "tmux 세션에 키 보내기 (예: [\"Down\", \"Enter\"], [\"Escape\"]). 승인 다이얼로그 처리용"))
+            m.add_tool(self.session_answer, name="session_answer", description=(
+                "SDK 세션의 질문/권한 확인에 답하기 (session_report 의 pending 참고). "
+                "질문: answers={질문 텍스트: 고른 답}. 권한: allow=true/false (+ message)"))
+        a = self.admin
+        a.add_tool(self.session_restart, name="session_restart", description=(
+            "끝난 세션 다시 띄우기. SDK 세션은 resume=true(기본)면 마지막 대화를 이어서, false 면 새 대화. "
+            "tmux 세션은 tmux 가 없어진 것만 같은 대화로 (cardinal revive)"))
+        a.add_tool(self.route_list, name="route_list", description=(
+            "채널 라우트 목록 (어떤 디스코드·슬랙·local 메시지를 어느 세션에 넘기는지). session 을 주면 그 세션 것만"))
+        a.add_tool(self.route_add, name="route_add", description=(
+            "세션에 채널 라우트 추가. platform: discord|slack|local|*, channel: 채널 이름 또는 ID (없으면 아무 채널), "
+            "match: prefix|contains|regex|mention, trigger: 없으면 모든 메시지 (mention 은 안 씀), "
+            "auto_reply: 턴 끝나면 마지막 응답을 서버가 대신 답장, allow_bots: 다른 봇·웹훅 메시지도 받음"))
+        a.add_tool(self.route_delete, name="route_delete", description="채널 라우트 지우기 (route_list 의 id)")
+        a.add_tool(self.server_status, name="server_status", description=(
+            "서버 상태: 주소, SDK 모드, 채널(discord/slack/local) 연결 상태, 세션 수(살아있는/전체)"))
+        a.add_tool(self.event_list, name="event_list", description=(
+            "최근 채널 이벤트(외부에서 온 메시지)와 어느 세션에 전달됐는지/실패했는지. limit 기본 20"))
 
     async def reply(self, event_id: str, text: str = "", files: list[str] | None = None, ctx: Context = None) -> str:
         me = self._caller(ctx)
@@ -238,7 +271,8 @@ class CardinalMcp:
 
     async def session_list(self, ctx: Context = None) -> str:
         self._caller(ctx)
-        rows = [{k: s[k] for k in ("name", "role", "backend", "state", "alive", "cwd", "parent_name")}
+        rows = [{**{k: s[k] for k in ("name", "role", "backend", "state", "alive", "cwd", "parent_name")},
+                 **({"admin": True} if self.is_admin(s) else {})}
                 for s in self.db.sessions()]
         return _json(rows)
 
@@ -341,6 +375,9 @@ class CardinalMcp:
     async def session_kill(self, name: str, purge: bool = False, ctx: Context = None) -> str:
         me = self._caller(ctx)
         self._not_self(me, name, "kill")
+        row = self.db.session_by_name(name)
+        if row and self.is_admin(row):
+            raise ToolError(f"관리자 세션은 도구로 못 끔: {name} (사람이 웹 UI/API 로)")
         try:
             await self.sessions.kill(name, purge)
         except Exception as e:
@@ -379,6 +416,65 @@ class CardinalMcp:
             return _json(self.sessions.sdk_session(name).answer(pending_id, answers, allow, message, None))
         except Exception as e:
             raise ToolError(f"실패: {e}")
+
+    # ---------- 관리자 ----------
+
+    async def session_restart(self, name: str, resume: bool = True, ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        self._not_self(me, name, "restart")
+        try:
+            row = await self.sessions.restart(name, resume=resume)
+        except Exception as e:
+            raise ToolError(f"실패: {e}")
+        return _json({k: row.get(k) for k in ("name", "backend", "state", "alive", "claude_session_id")})
+
+    def _session_id(self, name: str) -> str:
+        row = self.db.session_by_name(name)
+        if not row:
+            raise ToolError(f"모르는 세션: {name}")
+        return row["id"]
+
+    async def route_list(self, session: str | None = None, ctx: Context = None) -> str:
+        self._caller(ctx)
+        names = {s["id"]: s["name"] for s in self.db.sessions(include_deleted=True)}
+        rows = self.db.routes(self._session_id(session) if session else None)
+        return _json([{**r, "session": names.get(r["session_id"])} for r in rows])
+
+    async def route_add(self, session: str, platform: str = "*", channel: str | None = None, trigger: str | None = None,
+                        match: str = "prefix", auto_reply: bool = False, allow_bots: bool = False,
+                        ctx: Context = None) -> str:
+        self._caller(ctx)
+        if platform not in ("discord", "slack", "local", "*"):
+            raise ToolError("platform 은 discord, slack, local, * 중 하나")
+        if match not in ("prefix", "contains", "regex", "mention"):
+            raise ToolError("match 는 prefix, contains, regex, mention 중 하나")
+        r = self.db.add_route(self._session_id(session), {"platform": platform, "channel": channel, "trigger": trigger,
+                                                         "match": match, "auto_reply": auto_reply, "allow_bots": allow_bots})
+        return _json(r)
+
+    async def route_delete(self, route_id: int, ctx: Context = None) -> str:
+        self._caller(ctx)
+        if not self.db.one("SELECT id FROM routes WHERE id=?", (route_id,)):
+            raise ToolError(f"모르는 라우트: {route_id}")
+        self.db.delete_route(route_id)
+        return "지움"
+
+    async def server_status(self, ctx: Context = None) -> str:
+        self._caller(ctx)
+        rows = self.db.sessions()
+        return _json({
+            "url": self.settings.url,
+            "sdk": self.settings.sdk,
+            "channels": {"local": "ready", "discord": "off", "slack": "off",
+                         **{p: getattr(a, "status", "ready") for p, a in self.router.adapters.items()}},
+            "sessions": {"alive": sum(1 for r in rows if r["alive"]), "total": len(rows)},
+            "home": str(self.settings.home),
+        })
+
+    async def event_list(self, limit: int = 20, ctx: Context = None) -> str:
+        self._caller(ctx)
+        events = self.db.channel_events(max(1, min(limit, 200)))
+        return _json(events)
 
     # ---------- 웹드라이브 ----------
 

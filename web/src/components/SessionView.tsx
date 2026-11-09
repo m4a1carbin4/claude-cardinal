@@ -92,6 +92,9 @@ export function SessionView({ session, version, onGone }: { session: Session; ve
         <div className="sv-title">
           <h2>{session.name}</h2>
           <span className={`role ${session.role}`}>{session.role}</span>
+          {session.admin && (
+            <span className="role admin" title="관리자 세션: 서버가 켤 때마다 같은 대화로 띄움. 지울 수 없음">admin</span>
+          )}
           {sdk && <span className="role sdk" title="tmux 없이 서버 안 Claude Agent SDK 로 도는 세션">SDK</span>}
           <span className={`badge ${st.tone}`}>{st.label}</span>
           {pendingCount > 0 && (
@@ -128,7 +131,7 @@ export function SessionView({ session, version, onGone }: { session: Session; ve
               {session.mcp ? (
                 <>
                   카디널 MCP <code>mcp__cardinal__*</code>{' '}
-                  <span className="muted small">({session.role === 'master' ? '마스터: 세션 만들기·보내기·기다리기 등 전부' : '워커: reply, 드라이브, 있는 워커 부르기'})</span>
+                  <span className="muted small">({session.admin ? '관리자: 마스터 도구 + 세션 다시 띄우기·라우트·서버 상태·채널 이벤트' : session.role === 'master' ? '마스터: 세션 만들기·보내기·기다리기 등 전부' : '워커: reply, 드라이브, 있는 워커 부르기'})</span>
                 </>
               ) : (
                 <>

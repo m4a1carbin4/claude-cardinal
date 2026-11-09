@@ -417,9 +417,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return s
 
     def pub(row: dict | None) -> dict | None:
-        """API 로 내보내는 세션 행: sdk 옵션의 env/헤더 값은 가림"""
+        """API 로 내보내는 세션 행: sdk 옵션의 env/헤더 값은 가림. admin = 관리자 세션인지"""
         if row and row.get("sdk_options") is not None:
             row = {**row, "sdk_options": redact_options(row["sdk_options"])}
+        if row:
+            row = {**row, "admin": bool((row.get("sdk_options") or {}).get("admin")) and row["name"] == settings.admin}
         return row
 
     def sess_err(e: Exception) -> HTTPException:
@@ -456,7 +458,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sessions": len(db.sessions()),
             "sdk": {"enabled": settings.sdk, "default_backend": "sdk" if settings.sdk else "tmux",
                     "alive": sum(1 for x in sdk_mgr.sessions.values() if x.alive)},
+            "admin": admin_status(),
         }
+
+    def admin_status() -> dict | None:
+        a = sdk_mgr.admin if settings.sdk else None
+        return {"name": a.name, "state": a.state, "alive": a.alive} if a else None
 
     # ---------- 세션 ----------
 
@@ -556,11 +563,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if body.sdk:
                 raise HTTPException(400, "tmux 세션엔 sdk 옵션이 없음")
             try:
-                await cli.run("revive", name, timeout=120, env={"CARDINAL_SERVER_URL": settings.url})
-            except CliError as e:
-                raise cli_call(e)
-            await ingestor.sync()
-            return pub(db.session_by_name(name))
+                return pub(await sessions.restart(name))
+            except SessionError as e:
+                raise sess_err(e)
         sess = sdk_or_400(name)
         if not settings.sdk:
             raise HTTPException(400, "SDK 모드가 꺼져 있음 (cardinal-server --sdk)")
