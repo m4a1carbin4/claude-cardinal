@@ -36,6 +36,7 @@ Without them the page shows "캐릭터를 못 불러옴" (couldn't load the char
 
 Also:
 
+- 🎤 voice input: the same component as the main UI's chat tab (`MicInput`, in-browser Whisper, audio never goes to the server). Shares the model, language and `인식되면 바로 보내기` (send on recognition) settings (`localStorage` `cardinal.asr`). With send-on-recognition the text goes straight to the admin, otherwise it's appended to the input box. ⚙ settings and notes pop up above the input bar
 - `중단` (stop): stops the bubbles and interrupts the admin's turn
 - If the admin asks a question (permission / AskUserQuestion), the log says so. Answer it in the main UI's chat tab
 - Touching the character (head pats, tapping the halo or body) reacts only on the page and is not sent to the admin (saves tokens)
@@ -70,7 +71,7 @@ Named by showing each one. The admin prompt has the same list.
 
 | File | |
 | --- | --- |
-| `web/stage.html`, `web/src/stage-page/` | the page (`main.ts` connection and input, `lines.ts` reply → lines, `arona.ts` character config, `stage.css`) |
+| `web/stage.html`, `web/src/stage-page/` | the page (`main.ts` connection and input, `mic.tsx` voice input, `lines.ts` reply → lines, `arona.ts` character config, `stage.css`) |
 | `web/src/stage/` | BA-REA character stage module (`src/` as is + `panelToggle.ts`). Keep it in step with BA-REA when changing it |
 | `web/vite.config.ts` | `stage.html` build input, dev server `/stage-assets` proxy |
 | `server/cardinal_server/app.py` | `/stage`, `/stage-assets/…` |
@@ -86,3 +87,4 @@ SDK server on a scratch home and port 7889, assets linked to BA-REA:
 - Work sent to the admin over REST → only in the log, no bubble
 - Server stop and start → asked from the stage, it remembered the previous exchange and answered using the expression list
 - The main UI shows the `스테이지` chip
+- Voice input: fed a 2.9 s Korean clip made with `say` instead of the mic → with send-on-recognition off the text landed in the input box, with it on it went straight to the admin and the reply came out as bubbles

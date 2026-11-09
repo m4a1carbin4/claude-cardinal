@@ -36,6 +36,7 @@ ln -s ~/BA-REA/public/game-assets ~/.cardinal/stage-assets
 
 그 밖에:
 
+- 🎤 음성 입력: 메인 화면 대화 탭과 같은 컴포넌트(`MicInput`, 브라우저 안 Whisper, 음성은 서버로 안 감). 모델·언어·`인식되면 바로 보내기` 설정도 같이 씀(`localStorage` `cardinal.asr`). 바로 보내기면 인식된 말을 바로 관리자에게, 아니면 입력창에 이어 붙임. ⚙ 설정·안내는 입력줄 위로 뜸
 - `중단`: 말풍선을 멈추고 관리자 턴도 중단
 - 관리자가 질문(권한·AskUserQuestion)을 하면 기록에 안내가 나옴. 답은 메인 화면 대화 탭에서
 - 캐릭터 만지기(머리 쓰다듬기, 헤일로·몸 누르기)는 페이지 안에서만 반응하고 관리자에게는 안 보냄 (토큰 아끼려고)
@@ -70,7 +71,7 @@ ln -s ~/BA-REA/public/game-assets ~/.cardinal/stage-assets
 
 | 파일 | |
 | --- | --- |
-| `web/stage.html`, `web/src/stage-page/` | 페이지 (`main.ts` 연결·입력, `lines.ts` 답 → 대사, `arona.ts` 캐릭터 설정, `stage.css`) |
+| `web/stage.html`, `web/src/stage-page/` | 페이지 (`main.ts` 연결·입력, `mic.tsx` 음성 입력, `lines.ts` 답 → 대사, `arona.ts` 캐릭터 설정, `stage.css`) |
 | `web/src/stage/` | BA-REA 캐릭터 스테이지 모듈 (`src/` 그대로 + `panelToggle.ts`). 고칠 땐 BA-REA 쪽과 맞출 것 |
 | `web/vite.config.ts` | `stage.html` 빌드 입력, 개발 서버 `/stage-assets` 프록시 |
 | `server/cardinal_server/app.py` | `/stage`, `/stage-assets/…` |
@@ -86,3 +87,4 @@ ln -s ~/BA-REA/public/game-assets ~/.cardinal/stage-assets
 - REST 로 관리자에게 보낸 일 → 기록에만 남고 말풍선은 안 나옴
 - 서버 껐다 켜기 → 스테이지에서 물으니 이전 대화를 기억하고 표정 목록대로 답함
 - 메인 화면에 `스테이지` 칩이 나옴
+- 음성 입력: 마이크 대신 `say`로 만든 한국어 음성(2.9초)을 넣어 봄 → 끄면 "지금 살아있는 세션이 몇 개인지 알려줘."가 입력창에, 바로 보내기를 켜면 바로 관리자에게 가서 답이 말풍선으로 나옴

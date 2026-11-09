@@ -5,6 +5,7 @@ import { BackgroundLayer, CharacterStage, SpineRenderer } from '../stage';
 import { mountPanelToggle } from '../stage/panelToggle';
 import { aronaCharacter, aronaModel, BACKGROUND } from './arona';
 import { lastEmotion, toLines } from './lines';
+import { mountMic } from './mic';
 import './stage.css';
 
 // 관리자가 스테이지에서 온 말인지 알아보는 표시 (관리자 프롬프트에 같은 말이 있음)
@@ -140,17 +141,30 @@ function connect(name: string) {
   open();
 }
 
-form.addEventListener('submit', (e) => {
-  e.preventDefault();
-  const text = input.value.trim();
-  if (!text) return;
+// 보냈으면 true (입력창 비우기용)
+function sendText(text: string): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     note('sys', '관리자에 안 붙어 있어요');
-    return;
+    return false;
   }
   ws.send(JSON.stringify({ type: 'send', id: `st${Date.now().toString(36)}`, text: `${MARK} ${text}`, wait: false }));
   note('me', text);
-  input.value = '';
+  return true;
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (text && sendText(text)) input.value = '';
+});
+// 음성 입력: "인식되면 바로 보내기" 면 바로 보내고, 아니면 입력창에 이어 붙임
+mountMic($('mic'), (text, autoSend) => {
+  if (autoSend) {
+    sendText(text);
+    return;
+  }
+  input.value = input.value.trim() ? `${input.value.trimEnd()} ${text}` : text;
+  input.focus();
 });
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
