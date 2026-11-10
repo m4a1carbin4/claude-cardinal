@@ -166,7 +166,44 @@ a.chip:hover { color: var(--text); border-color: var(--accent); }
 /* 세션 목록 */
 .session-list { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .list-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.82rem; color: var(--muted); padding: 2px 4px 6px; }
-.session-list ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.session-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sl-body { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+/* 세션 그룹 (이 브라우저에만 저장) */
+.sg-tools { display: flex; gap: 4px; padding: 0 2px 6px; }
+.sg-tools button { padding: 2px 8px; font-size: 0.78rem; }
+.sg-form { display: flex; gap: 4px; padding: 0 2px 6px; }
+.sg-form input { flex: 1; min-width: 0; padding: 4px 8px; }
+.sg { border-radius: 10px; border: 1px dashed transparent; }
+.sg.drop { border-color: var(--accent); background: var(--surface-2); }
+.sg-head { display: flex; align-items: center; gap: 2px; }
+.sg-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left;
+  border: none; background: transparent; padding: 4px 6px; border-radius: 8px; font-size: 0.82rem; color: var(--muted); font-weight: 600;
+}
+.sg-toggle:hover { background: var(--surface-2); color: var(--text); }
+.sg-caret { width: 10px; flex: none; }
+.sg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-count { font-weight: 400; font-size: 0.75rem; padding: 0 6px; border-radius: 8px; background: var(--surface-2); }
+.sg-sel { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--accent); flex: none; }
+.sg-actions { display: none; flex: none; }
+.sg-head:hover .sg-actions, .sg-head:focus-within .sg-actions { display: flex; }
+.sg-actions button { border: none; padding: 2px 5px; font-size: 0.78rem; color: var(--muted); }
+.sg-actions button:hover { color: var(--text); }
+.sg-actions button.danger:hover { color: var(--err); }
+.sg > ul { padding-left: 8px; padding-top: 2px; }
+.sg-empty { padding: 4px 22px 6px; font-size: 0.78rem; }
+.si-row { position: relative; display: flex; flex-wrap: wrap; align-items: center; }
+.si-row .session-item { flex: 1; min-width: 0; padding-right: 30px; }
+.si-more { position: absolute; right: 4px; top: 6px; opacity: 0; border: none; padding: 0 6px; }
+.si-row:hover .si-more, .si-more:focus-visible, .si-more.on { opacity: 1; }
+@media (hover: none) { .si-more { opacity: 0.6; } }
+/* 목록이 스크롤 영역이라 떠 있는 메뉴는 잘림 → 행 아래에 펼침 */
+.si-menu {
+  flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; margin: 2px 4px 4px 22px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px;
+}
+.si-menu label { font-size: 0.8rem; color: var(--muted); }
+.session-item.hidden { opacity: 0.6; }
 .session-item {
   width: 100%; display: flex; align-items: center; gap: 10px; text-align: left;
   border: 1px solid transparent; background: transparent; padding: 8px 10px; border-radius: 10px;
