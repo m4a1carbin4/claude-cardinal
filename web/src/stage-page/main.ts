@@ -5,12 +5,17 @@ import { BackgroundLayer, CharacterStage, SpineRenderer } from '../stage';
 import { mountPanelToggle } from '../stage/panelToggle';
 import { aronaCharacter, aronaModel, BACKGROUND } from './arona';
 import { lastEmotion, toLines } from './lines';
-import { mountMic } from './mic';
+import { mountMic, setReplying } from './mic';
 import './stage.css';
 
 // 관리자가 스테이지에서 온 말인지 알아보는 표시 (관리자 프롬프트에 같은 말이 있음)
 const MARK = '[스테이지]';
 const READ_ALL_KEY = 'cardinal.stage.readAll';
+const WAKE_REPLIES = [
+  { text: '네, 선생님! 말씀하세요.', emotion: 20 },
+  { text: '부르셨어요, 선생님?', emotion: 2 },
+  { text: '네! 듣고 있어요.', emotion: 3 },
+];
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const statusDot = $<HTMLSpanElement>('status-dot');
@@ -90,9 +95,11 @@ function onMessage(m: any) {
     case 'turn_start':
       ourTurn = String(m.prompt ?? '').startsWith(MARK);
       emotion = null;
+      setReplying(ourTurn); // 호출어: 스테이지 턴이 도는 동안과 끝난 뒤 잠깐은 이름 없이 받음
       break;
     case 'turn':
       ourTurn = false;
+      setReplying(false);
       break;
     case 'pending':
       note('sys', `관리자가 묻는 중: ${m.pending?.tool ?? '질문'} → 대화 탭에서 답해 주세요`);
@@ -132,6 +139,7 @@ function connect(name: string) {
     };
     sock.onclose = (e) => {
       ws = null;
+      setReplying(false);
       setStatus('off', e.code === 4401 ? '토큰 필요 (메인 화면에서 입력)' : '연결 끊김 · 다시 붙는 중');
       if (e.code === 4401) return;
       setTimeout(open, retry);
@@ -157,14 +165,18 @@ form.addEventListener('submit', (e) => {
   const text = input.value.trim();
   if (text && sendText(text)) input.value = '';
 });
-// 음성 입력: "인식되면 바로 보내기" 면 바로 보내고, 아니면 입력창에 이어 붙임
-mountMic($('mic'), (text, autoSend) => {
-  if (autoSend) {
+// 음성 입력: 바로 보내기(누르는 동안·계속 듣기는 늘, 버튼은 설정 따라)면 보내고, 아니면 입력창에 이어 붙임
+mountMic($('mic'), (text, send) => {
+  if (send) {
     sendText(text);
     return;
   }
   input.value = input.value.trim() ? `${input.value.trimEnd()} ${text}` : text;
   input.focus();
+}, () => {
+  // 호출어: 이름만 불렀을 때 대답 (관리자에겐 안 보냄)
+  const reply = WAKE_REPLIES[Math.floor(Math.random() * WAKE_REPLIES.length)];
+  void stage.agent.play({ text: reply.text, emotion: reply.emotion });
 });
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
