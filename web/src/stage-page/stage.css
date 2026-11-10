@@ -139,18 +139,17 @@ body {
   background: rgb(20 32 58 / 0.8);
 }
 
-/* 음성 입력 (메인 화면 MicInput 그대로). 버튼 줄은 입력줄에, 설정·안내는 그 위로 쌓임 */
+/* 음성 입력 (voice.tsx). 버튼 줄은 입력줄에 (라벨 길이만큼 넓어짐), 설정·안내는 그 위로 떠서 쌓임 */
 .st-mic {
   position: relative;
   flex: none;
-  width: 108px;
 }
-.st-mic .mic {
+.st-mic .mic-pop {
   position: absolute;
   left: 0;
-  bottom: 0;
+  bottom: calc(100% + 6px);
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
   gap: 6px;
 }
 .st-mic .row {
@@ -175,6 +174,38 @@ body {
 .st-say .st-mic button.mic-btn.transcribing {
   color: #4a5a9a;
 }
+/* 누르는 동안·계속 듣기: 마이크 소리 크기 막대 (--lv 0–1, listen.ts 가 프레임마다 넣음) */
+.st-say .st-mic button.mic-btn.ptt,
+.st-say .st-mic button.mic-btn.vad {
+  white-space: nowrap;
+  background-image: linear-gradient(to right, rgb(47 95 208 / 0.28) calc(var(--lv, 0) * 100%), transparent 0);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.st-say .st-mic button.mic-btn.listening {
+  background-color: #e5f3ea;
+  color: #2f7d4f;
+  font-weight: 600;
+}
+.st-mic .voice-modes {
+  display: flex;
+  gap: 4px;
+}
+.st-say .st-mic .voice-modes button {
+  flex: 1;
+  padding: 4px 8px;
+  background: #e8ecf8;
+  color: #1d2b45;
+}
+.st-say .st-mic .voice-modes button.on {
+  background: #2f5fd0;
+  color: #fff;
+  font-weight: 600;
+}
+.st-mic .mic-settings input[type='range'] {
+  flex: 1;
+}
 .st-say .st-mic button:disabled {
   opacity: 0.6;
   cursor: default;
@@ -184,7 +215,7 @@ body {
   background: #e8ecf8;
   color: #1d2b45;
 }
-.st-mic .mic > :not(.row) {
+.st-mic .mic-pop > * {
   width: min(420px, calc(100vw - 32px));
   box-sizing: border-box;
   padding: 6px 10px;
@@ -244,4 +275,14 @@ body {
   .st-log {
     max-height: 25vh;
   }
+}
+
+/* 호출어 이름 입력 */
+.st-mic .mic-settings input.wake-word {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid #c9d1e4;
+  border-radius: 6px;
+  font: inherit;
 }

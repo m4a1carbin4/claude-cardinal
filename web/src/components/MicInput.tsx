@@ -101,8 +101,6 @@ export function MicInput({ onText, disabled }: { onText: (text: string, autoSend
   }
 
   const loading = asr.loading?.model === settings.model ? asr.loading : undefined;
-  const m = modelOf(settings.model);
-  const size = asr.device ? m.size[asr.device] : m.size['webgpu-f16'];
   const label =
     phase === 'recording'
       ? `■ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
@@ -141,43 +139,7 @@ export function MicInput({ onText, disabled }: { onText: (text: string, autoSend
       </div>
       {open && (
         <div className="mic-settings">
-          <label>
-            모델
-            <select value={settings.model} onChange={(e) => update({ model: e.target.value as AsrSettings['model'] })} disabled={phase !== 'idle'}>
-              {ASR_MODELS.map((x) => (
-                <option key={x.key} value={x.key}>
-                  {x.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            언어
-            <select value={settings.language} onChange={(e) => update({ language: e.target.value })}>
-              {ASR_LANGUAGES.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="check">
-            <input type="checkbox" checked={settings.autoSend} onChange={(e) => update({ autoSend: e.target.checked })} /> 인식되면 바로 보내기
-          </label>
-          <div className="row wrap small muted">
-            <span>
-              {asr.device ? DEVICE_LABEL[asr.device] : '장치 확인 전'} · 받을 크기 약 {size}MB (처음 한 번, 브라우저에 저장)
-            </span>
-            {asr.ready === settings.model ? (
-              <span className="badge ok">준비됨</span>
-            ) : loading ? (
-              <span className="badge info">받는 중 {Math.round(loading.progress)}%</span>
-            ) : (
-              <button type="button" className="ghost small" onClick={() => preloadAsr(settings.model)}>
-                미리 받기
-              </button>
-            )}
-          </div>
+          <AsrOptions settings={settings} update={update} asr={asr} busy={phase !== 'idle'} />
         </div>
       )}
       {phase === 'recording' && loading ? (
@@ -188,5 +150,65 @@ export function MicInput({ onText, disabled }: { onText: (text: string, autoSend
         (note || asr.error) && <div className={`small ${asr.error && !note ? 'err-text' : 'muted'}`}>{note || asr.error}</div>
       )}
     </div>
+  );
+}
+
+// 모델·언어·바로 보내기 + 장치/받을 크기/미리 받기. 대화 탭 MicInput 과 스테이지 음성 입력이 같이 씀 (설정도 같음)
+export function AsrOptions({
+  settings,
+  update,
+  asr,
+  busy,
+  autoSendLabel = '인식되면 바로 보내기',
+}: {
+  settings: AsrSettings;
+  update: (patch: Partial<AsrSettings>) => void;
+  asr: AsrStatus;
+  busy: boolean; // 녹음·인식 중엔 모델을 못 바꿈
+  autoSendLabel?: string;
+}) {
+  const loading = asr.loading?.model === settings.model ? asr.loading : undefined;
+  const m = modelOf(settings.model);
+  const size = asr.device ? m.size[asr.device] : m.size['webgpu-f16'];
+  return (
+    <>
+      <label>
+        모델
+        <select value={settings.model} onChange={(e) => update({ model: e.target.value as AsrSettings['model'] })} disabled={busy}>
+          {ASR_MODELS.map((x) => (
+            <option key={x.key} value={x.key}>
+              {x.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        언어
+        <select value={settings.language} onChange={(e) => update({ language: e.target.value })}>
+          {ASR_LANGUAGES.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={settings.autoSend} onChange={(e) => update({ autoSend: e.target.checked })} /> {autoSendLabel}
+      </label>
+      <div className="row wrap small muted">
+        <span>
+          {asr.device ? DEVICE_LABEL[asr.device] : '장치 확인 전'} · 받을 크기 약 {size}MB (처음 한 번, 브라우저에 저장)
+        </span>
+        {asr.ready === settings.model ? (
+          <span className="badge ok">준비됨</span>
+        ) : loading ? (
+          <span className="badge info">받는 중 {Math.round(loading.progress)}%</span>
+        ) : (
+          <button type="button" className="ghost small" onClick={() => preloadAsr(settings.model)}>
+            미리 받기
+          </button>
+        )}
+      </div>
+    </>
   );
 }

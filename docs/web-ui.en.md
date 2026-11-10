@@ -61,6 +61,15 @@ Every session field (identity key, backend, Cardinal tools (MCP / CLI), tmux, cu
 
 Live via `/ws/events`. State dots: idle (green), working (orange, tool name), waiting for approval / for an answer on SDK (red), starting / interrupted by a human (blue), ended (grey). SDK sessions show `SDK` next to the name. "삭제된 것도" also shows DB records of purged sessions (not selectable).
 
+**Groups and hiding** (kept in this browser only, `localStorage` `cardinal.groups`; nothing goes to the server):
+
+- `+ 그룹` (new group) splits the list by group. Sessions not in a group go under "그룹 없음" (no group) at the bottom
+- Drag a session onto a group, or hover a session → `⋯` → pick a group
+- Click a group name to fold/unfold it; `모두 접기` / `모두 펼치기` fold/unfold all. A folded group shows a dot when a session inside is waiting (red) or working (orange), and a ring when the session you're viewing is inside
+- Hover a group name for `↑` `↓` reorder, `✎` rename, `✕` delete (its sessions go back to "no group")
+- `⋯` → `목록에서 숨기기` (hide from list): takes it out of the list (the session keeps running). Turn on "숨긴 것 N" (hidden N) to see them with a `숨김` badge, then `⋯` → `다시 보이기` (show again). The selected session stays visible even if hidden
+- Sessions are keyed by name, so one deleted and re-created with the same name keeps its group and hidden state
+
 ### Session detail (tabs)
 
 | Tab | What it does |
@@ -136,7 +145,8 @@ If the server runs with `CARDINAL_TOKEN`, open the page once with `?token=…` (
 | `web/src/types.ts` | server response types |
 | `web/src/hooks.ts` | reconnecting JSON WebSocket subscription (`useJsonSocket`), one that also sends (`useSocket`, `/ws/sdk`), intervals |
 | `web/src/App.tsx` | layout, live session list, token, URL hash |
-| `web/src/components/SessionList.tsx` | session list |
+| `web/src/components/SessionList.tsx` | session list (groups, hiding) |
+| `web/src/groups.ts` | session group / hidden state (`localStorage`) |
 | `web/src/components/CreateSession.tsx` | new session (backend choice) |
 | `web/src/components/SdkOptionsFields.tsx` | SDK options form (shared by new session and settings tab), form ↔ options conversion and checks |
 | `web/src/components/SdkPanels.tsx` | SDK: conversation (live, question/permission cards) / MCP / settings |
