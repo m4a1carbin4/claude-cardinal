@@ -4,7 +4,7 @@
   "short_name": "Stage",
   "description": "카디널 관리자 세션 캐릭터 스테이지",
   "start_url": "/stage",
-  "scope": "/",
+  "scope": "/stage",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#0e1626",

@@ -1,7 +1,7 @@
 // 카디널 서비스 워커: 설치(PWA) 조건용 + 앱 껍데기(해시 붙은 /assets/*, 아이콘)만 캐시.
 // API·웹소켓·스테이지 리소스·페이지(HTML)는 항상 네트워크로 (서버 상태·토큰이 낡은 채로 보이면 안 됨).
-const CACHE = 'cardinal-shell-v1';
-const SHELL = ['/icon-192.png', '/icon-512.png', '/stage.webmanifest'];
+const CACHE = 'cardinal-shell-v2';
+const SHELL = ['/icon-192.png', '/icon-512.png', '/stage.webmanifest', '/cardinal.webmanifest'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

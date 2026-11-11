@@ -100,10 +100,10 @@ Named by showing each one. The admin prompt has the same list.
 
 ## Install as an app (PWA)
 
-`/stage` is a PWA: Android Chrome and others offer "Install app / Add to Home screen" (it then opens `/stage` without the address bar).
+`/stage` is a PWA (the main page `/` installs separately the same way: `web/public/cardinal.webmanifest`, same service worker): Android Chrome and others offer "Install app / Add to Home screen" (it then opens `/stage` without the address bar).
 
 - **Installs only over HTTPS or `localhost`** (browser rule). A plain-http address such as `http://wgnw.worker.ai:16050` works as a normal page only. To use it on a phone, serve it over HTTPS (e.g. Tailscale serve/funnel, Cloudflare Tunnel)
-- Metadata: `web/public/stage.webmanifest` (name, `start_url=/stage`, `display=standalone`, theme colour, 192/512/maskable icons); the iOS `apple-touch-icon.png` and meta tags are in `stage.html`
+- Metadata: `web/public/stage.webmanifest` (name, `start_url=/stage`, `scope=/stage` so it doesn't overlap the main app, `display=standalone`, theme colour, 192/512/maskable icons); the iOS `apple-touch-icon.png` and meta tags are in `stage.html`
 - `web/public/sw.js`: a service worker for installability. It caches only the hashed `/assets/*` and icons; pages, API, websockets and `/stage-assets` always go to the network (so server state and tokens are never stale). Rebuilt code gets new hashes and is fetched fresh
 - It does not work offline (it needs the server); the worker only makes it installable
 
