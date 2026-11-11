@@ -27,6 +27,7 @@ from .channel.base import OutboundFile
 from .config import Settings
 from .db import DB
 from .drive import Drive, DriveError
+from . import worktree as wtree
 
 log = logging.getLogger("cardinal.mcp")
 
@@ -49,7 +50,8 @@ WORKER_INSTRUCTIONS = (
 )
 MASTER_INSTRUCTIONS = WORKER_INSTRUCTIONS + (
     " 마스터는 일을 나눌 때 내장 서브 에이전트 대신 session_new 로 독립 워커 세션을 띄워 맡기고, "
-    "session_send / session_wait / session_report 로 지시하고 결과를 받음 (마스터는 다른 마스터도 부를 수 있음)."
+    "session_send / session_wait / session_report 로 지시하고 결과를 받음 (마스터는 다른 마스터도 부를 수 있음). "
+    "같은 저장소를 여러 워커가 동시에 고치게 할 때는 session_new_worktree 로 워커마다 git worktree 를 따로 줌."
 )
 
 ADMIN_INSTRUCTIONS = MASTER_INSTRUCTIONS + (
@@ -222,6 +224,12 @@ class CardinalMcp:
                 "독립 워커 세션 만들기 (내장 서브 에이전트 대신). cwd 를 안 주면 너와 같은 작업 폴더, backend 를 안 주면 너와 같은 방식. "
                 "prompt 를 주면 바로 첫 지시를 보내고, wait=true 면 그 턴의 응답까지 기다려 돌려줌. "
                 "attachments: 첫 지시에 붙일 웹드라이브 경로 목록"))
+            m.add_tool(self.session_new_worktree, name="session_new_worktree", description=(
+                "session_new 와 같은데, 워커의 작업 폴더를 새 git worktree 로 만들어 줌 (저장소를 여러 워커가 동시에 고쳐도 안 겹침). "
+                "repo(기본: 너의 작업 폴더)가 git 저장소일 때만 됨. 브랜치는 branch(기본: 세션 이름)로, 이미 있으면 그걸 체크아웃하고 "
+                "없으면 base(기본: 지금 HEAD)에서 새로 만듦. worktree 위치는 dir 로 정하고, 안 주면 카디널 워크스페이스 안 "
+                "<저장소>-<세션 이름>. 세션 만들기가 실패하면 만든 worktree 는 되돌림. 세션을 끝내도 worktree 는 남음 (git worktree remove 로 정리). "
+                "나머지(prompt, wait, attachments, backend, role)는 session_new 와 같음"))
             m.add_tool(self.session_kill, name="session_kill",
                        description="세션 끝내기 (purge=true 면 기록도 삭제 표시)")
             m.add_tool(self.session_screen, name="session_screen", description=(
@@ -312,6 +320,19 @@ class CardinalMcp:
             if not self._waits[me["name"]]:
                 del self._waits[me["name"]]
 
+    async def _create_session(self, me: dict, *, name: str, role: str, cwd: str, backend: str | None) -> dict:
+        return await self.sessions.create(
+            name=name, role=role, prompt=None, cwd=cwd, backend=backend or me["backend"],
+            parent={"id": me["id"], "name": me["name"]}, trust=True)
+
+    async def _first_prompt(self, me: dict, row: dict, prompt: str | None, wait: bool, timeout_s: int,
+                            attachments: list[str] | None) -> dict[str, Any]:
+        out: dict[str, Any] = {"created": row.get("name"), "backend": row.get("backend"), "cwd": row.get("cwd")}
+        if prompt:
+            out["send"] = await self.sessions.send(row["name"], prompt, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S),
+                                                   attachments=self._drive_paths(me, attachments))
+        return out
+
     async def session_new(self, name: str, prompt: str | None = None, role: str = "worker", cwd: str | None = None,
                           backend: str | None = None, wait: bool = False, timeout_s: int = DEFAULT_WAIT_S,
                           attachments: list[str] | None = None, ctx: Context = None) -> str:
@@ -319,17 +340,44 @@ class CardinalMcp:
         if role not in ("worker", "master"):
             raise ToolError("role 은 worker 또는 master")
         try:
-            row = await self.sessions.create(
-                name=name, role=role, prompt=None, cwd=cwd or me["cwd"], backend=backend or me["backend"],
-                parent={"id": me["id"], "name": me["name"]}, trust=True)
-            out: dict[str, Any] = {"created": row.get("name"), "backend": row.get("backend"), "cwd": row.get("cwd")}
-            if prompt:
-                out["send"] = await self.sessions.send(name, prompt, wait=wait, timeout_s=min(timeout_s, MAX_WAIT_S),
-                                                       attachments=self._drive_paths(me, attachments))
+            row = await self._create_session(me, name=name, role=role, cwd=cwd or me["cwd"], backend=backend)
+            out = await self._first_prompt(me, row, prompt, wait, timeout_s, attachments)
         except ToolError:
             raise
         except Exception as e:
             raise ToolError(f"실패: {e}")
+        return _json(out)
+
+    async def session_new_worktree(self, name: str, prompt: str | None = None, role: str = "worker",
+                                   repo: str | None = None, branch: str | None = None, base: str | None = None,
+                                   dir: str | None = None, backend: str | None = None, wait: bool = False,
+                                   timeout_s: int = DEFAULT_WAIT_S, attachments: list[str] | None = None,
+                                   ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        if role not in ("worker", "master"):
+            raise ToolError("role 은 worker 또는 master")
+        self.settings.workspace.mkdir(parents=True, exist_ok=True)
+        try:
+            wt = await wtree.create(cwd=repo or me["cwd"], name=name, base_dir=self.settings.workspace,
+                                    branch=branch, base=base, dir=dir)
+        except wtree.WorktreeError as e:
+            raise ToolError(f"worktree 실패: {e}")
+        try:
+            row = await self._create_session(me, name=name, role=role, cwd=wt.cwd, backend=backend)
+        except BaseException as e:
+            # 세션이 안 만들어졌으니 방금 만든 worktree(와 새 브랜치)는 되돌림
+            await asyncio.shield(wtree.remove(wt))
+            if not isinstance(e, Exception):
+                raise
+            raise ToolError(f"실패: {e}")
+        try:
+            out = await self._first_prompt(me, row, prompt, wait, timeout_s, attachments)
+        except ToolError:
+            raise
+        except Exception as e:
+            # 세션은 이미 있음 → worktree 는 남김
+            raise ToolError(f"세션은 만들어짐 (cwd={wt.cwd}, branch={wt.branch}), 첫 지시 실패: {e}")
+        out["worktree"] = {"path": wt.path, "branch": wt.branch, "new_branch": wt.new_branch, "repo": wt.repo}
         return _json(out)
 
     async def session_send(self, name: str, text: str, wait: bool = True, timeout_s: int = DEFAULT_WAIT_S,
