@@ -26,6 +26,7 @@ const input = $<HTMLTextAreaElement>('say-text');
 const stopBtn = $<HTMLButtonElement>('stop');
 const readAll = $<HTMLInputElement>('read-all');
 const chatLink = $<HTMLAnchorElement>('chat-link');
+const echo = $<HTMLDivElement>('echo');
 
 // spine 로더는 헤더를 못 붙여서 리소스 요청엔 쿠키로 토큰을 실어 보냄
 const token = currentToken();
@@ -51,6 +52,15 @@ function note(who: 'me' | 'admin' | 'sys', text: string) {
   log.append(row);
   while (log.children.length > 60) log.firstElementChild?.remove();
   log.scrollTop = log.scrollHeight;
+}
+
+// 내가 보낸 말(글·음성 다)을 오른쪽 아래에 잠깐 보여 줌. 음성이 제대로 글자가 됐는지 바로 확인용
+let echoTimer: number | undefined;
+function showEcho(text: string) {
+  echo.textContent = text;
+  echo.classList.add('show');
+  clearTimeout(echoTimer);
+  echoTimer = window.setTimeout(() => echo.classList.remove('show'), Math.min(4000 + text.length * 80, 15000));
 }
 
 function setStatus(kind: 'ok' | 'busy' | 'off' | 'warn', text: string) {
@@ -157,6 +167,7 @@ function sendText(text: string): boolean {
   }
   ws.send(JSON.stringify({ type: 'send', id: `st${Date.now().toString(36)}`, text: `${MARK} ${text}`, wait: false }));
   note('me', text);
+  showEcho(text);
   return true;
 }
 
@@ -204,3 +215,8 @@ api.health().then(
   },
   (e) => setStatus('off', e instanceof ApiError && e.status === 401 ? '토큰 필요 (메인 화면에서 입력)' : '서버에 못 붙음'),
 );
+
+// PWA: 서비스 워커 등록 (설치 가능 조건). 안 되는 환경(http 도메인 등)이면 그냥 일반 웹페이지로 동작
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}

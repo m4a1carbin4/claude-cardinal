@@ -98,6 +98,19 @@ Named by showing each one. The admin prompt has the same list.
 | 15 | troubled | 32 | big smile |
 | 16 | embarrassed fluster (sweat) | 99 | calm, eyes closed |
 
+## Install as an app (PWA)
+
+`/stage` is a PWA: Android Chrome and others offer "Install app / Add to Home screen" (it then opens `/stage` without the address bar).
+
+- **Installs only over HTTPS or `localhost`** (browser rule). A plain-http address such as `http://wgnw.worker.ai:16050` works as a normal page only. To use it on a phone, serve it over HTTPS (e.g. Tailscale serve/funnel, Cloudflare Tunnel)
+- Metadata: `web/public/stage.webmanifest` (name, `start_url=/stage`, `display=standalone`, theme colour, 192/512/maskable icons); the iOS `apple-touch-icon.png` and meta tags are in `stage.html`
+- `web/public/sw.js`: a service worker for installability. It caches only the hashed `/assets/*` and icons; pages, API, websockets and `/stage-assets` always go to the network (so server state and tokens are never stale). Rebuilt code gets new hashes and is fetched fresh
+- It does not work offline (it needs the server); the worker only makes it installable
+
+## Echo of what you sent
+
+What you sent (typed or by voice) shows for a few seconds (4-15 s, by length) in a small box at the bottom right, just above the input bar, so you can see that speech was transcribed correctly.
+
 ## Files
 
 | File | |
