@@ -1,0 +1,33 @@
+{
+  "id": "/stage",
+  "name": "Cardinal Stage",
+  "short_name": "Stage",
+  "description": "카디널 관리자 세션 캐릭터 스테이지",
+  "start_url": "/stage",
+  "scope": "/stage",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e1626",
+  "theme_color": "#0e1626",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

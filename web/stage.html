@@ -2,8 +2,16 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <link rel="icon" type="image/png" href="/banner.png" />
+    <!-- PWA: 안드로이드 등에서 "앱 설치/홈 화면에 추가" (HTTPS 또는 localhost 에서만 설치 가능) -->
+    <link rel="manifest" href="/stage.webmanifest" />
+    <meta name="theme-color" content="#0e1626" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Stage" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Cardinal Stage</title>
   </head>
   <body>
@@ -26,6 +34,7 @@
       <button type="submit">보내기</button>
       <button id="stop" type="button" class="ghost" title="말풍선 멈추고 관리자 턴 중단">중단</button>
     </form>
+    <div id="echo" class="st-echo" aria-live="polite"></div>
     <script type="module" src="/src/stage-page/main.ts"></script>
   </body>
 </html>

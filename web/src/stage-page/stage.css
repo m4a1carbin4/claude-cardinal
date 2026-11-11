@@ -286,3 +286,30 @@ body {
   border-radius: 6px;
   font: inherit;
 }
+
+/* 내가 보낸 말: 오른쪽 아래 작은 칸 (입력창 바로 위). 잠깐 떴다가 사라짐 */
+.st-echo {
+  position: fixed;
+  right: 12px;
+  bottom: calc(64px + env(safe-area-inset-bottom));
+  z-index: 15;
+  max-width: min(260px, calc(100% - 24px));
+  max-height: 4.4em;
+  overflow: hidden;
+  padding: 6px 10px;
+  border-radius: 10px 10px 2px 10px;
+  background: rgb(47 95 208 / 0.88);
+  color: #fff;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.25s, transform 0.25s;
+}
+
+.st-echo.show {
+  opacity: 1;
+  transform: none;
+}

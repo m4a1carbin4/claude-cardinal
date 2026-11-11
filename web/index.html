@@ -2,8 +2,15 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <link rel="icon" type="image/png" href="/banner.png" />
+    <!-- PWA: 앱으로 설치 (HTTPS 또는 localhost 에서만). 스테이지(/stage)는 따로 설치됨 -->
+    <link rel="manifest" href="/cardinal.webmanifest" />
+    <meta name="theme-color" content="#0e1626" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Cardinal" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Cardinal</title>
   </head>
   <body>

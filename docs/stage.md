@@ -98,6 +98,19 @@ ln -s ~/BA-REA/public/game-assets ~/.cardinal/stage-assets
 | 15 | 곤란 | 32 | 활짝 웃음 |
 | 16 | 부끄러운 당황 (땀) | 99 | 차분히 눈 감음 |
 
+## 앱으로 설치 (PWA)
+
+`/stage` 는 PWA 라서 (메인 화면 `/` 도 같은 방식으로 따로 설치됨: `web/public/cardinal.webmanifest`, 같은 서비스 워커) 안드로이드 Chrome 등에서 "앱 설치 / 홈 화면에 추가"로 설치할 수 있다 (설치하면 주소창 없이 `/stage` 가 바로 열림).
+
+- **HTTPS 또는 `localhost` 에서만 설치됨** (브라우저 규칙). `http://wgnw.worker.ai:16050` 같은 http 주소는 일반 웹페이지로만 동작. 폰에서 쓰려면 HTTPS 로 내보내야 함 (예: Tailscale serve/funnel, Cloudflare Tunnel)
+- 메타데이터: `web/public/stage.webmanifest` (이름·`start_url=/stage`·`scope=/stage` 로 메인 앱과 안 겹치게·`display=standalone`·테마색·아이콘 192/512/maskable), iOS 용 `apple-touch-icon.png` 와 메타 태그는 `stage.html`
+- `web/public/sw.js`: 설치 조건용 서비스 워커. 해시 붙은 `/assets/*` 와 아이콘만 캐시하고 페이지·API·웹소켓·`/stage-assets` 는 항상 네트워크로 (서버 상태·토큰이 낡아 보이면 안 되므로). 앱 코드를 바꿔도 해시가 달라져 새로 받음
+- 오프라인에서는 서버에 붙어야 쓸 수 있어서 동작 안 함 (설치 가능하게만 한 것)
+
+## 내가 보낸 말 표시
+
+보낸 말(글·음성 모두)을 오른쪽 아래, 입력창 바로 위 작은 칸에 잠깐(글자 수에 따라 4~15초) 보여 준다. 음성이 글자로 제대로 바뀌어 보내졌는지 바로 볼 수 있음.
+
 ## 파일
 
 | 파일 | |
