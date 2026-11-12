@@ -3,6 +3,7 @@
 import { ApiError, api, currentToken, wsUrl } from '../api';
 import { BackgroundLayer, CharacterStage, SpineRenderer } from '../stage';
 import { mountPanelToggle } from '../stage/panelToggle';
+import { createActivity } from './activity';
 import { aronaCharacter, aronaModel, BACKGROUND } from './arona';
 import { lastEmotion, toLines } from './lines';
 import { mountMic, setReplying } from './mic';
@@ -14,6 +15,7 @@ import './stage.css';
 // 관리자가 스테이지에서 온 말인지 알아보는 표시 (관리자 프롬프트에 같은 말이 있음)
 const MARK = '[스테이지]';
 const READ_ALL_KEY = 'cardinal.stage.readAll';
+const SOUND_KEY = 'cardinal.stage.sound';
 const WAKE_REPLIES = [
   { text: '네, 선생님! 말씀하세요.', emotion: 20 },
   { text: '부르셨어요, 선생님?', emotion: 2 },
@@ -28,6 +30,7 @@ const form = $<HTMLFormElement>('say');
 const input = $<HTMLTextAreaElement>('say-text');
 const stopBtn = $<HTMLButtonElement>('stop');
 const readAll = $<HTMLInputElement>('read-all');
+const soundBox = $<HTMLInputElement>('sound');
 const chatLink = $<HTMLAnchorElement>('chat-link');
 const echo = $<HTMLDivElement>('echo');
 
@@ -47,6 +50,18 @@ try {
 readAll.addEventListener('change', () => {
   try {
     localStorage.setItem(READ_ALL_KEY, readAll.checked ? '1' : '0');
+  } catch {
+    // 무시
+  }
+});
+try {
+  soundBox.checked = localStorage.getItem(SOUND_KEY) === '1';
+} catch {
+  // 무시
+}
+soundBox.addEventListener('change', () => {
+  try {
+    localStorage.setItem(SOUND_KEY, soundBox.checked ? '1' : '0');
   } catch {
     // 무시
   }
@@ -108,8 +123,15 @@ mountTts($('tts'), tts, (text, audio) => {
   hush();
   void stage.agent.play({ text, audio, holdMs: TTS_HOLD_MS });
 });
-// 개발자 도구에서 만져 보기용: stage.agent.play({ text, emotion }), renderer.setExpression('05'), tts.state
-Object.assign(window, { stage, renderer, tts });
+
+// 관리자가 지금 뭘 하는지(생각/도구/답 필요)를 캐릭터 옆 배지로
+const activity = createActivity({
+  anchor: $('stage').querySelector<HTMLElement>('.ba-stage__character')!,
+  sound: () => soundBox.checked,
+  baseTitle: document.title,
+});
+// 개발자 도구에서 만져 보기용: stage.agent.play({ text, emotion }), renderer.setExpression('05'), tts.state, activity.update({ alive: true, state: 'busy', tool: 'Bash' })
+Object.assign(window, { stage, renderer, tts, activity });
 
 // ---- 관리자 세션 연결 ----
 
@@ -128,6 +150,7 @@ function onMessage(m: any) {
     case 'hello':
     case 'state': {
       const s = m.type === 'hello' ? m.status : m;
+      activity.update(s);
       if (!s.alive) setStatus('off', '관리자 꺼져 있음');
       else if (s.state === 'busy') setStatus('busy', s.tool ? `작업 중 · ${s.tool}` : '생각 중…');
       else if (s.state === 'waiting') setStatus('warn', '질문 대기 · 대화 탭에서 답해 주세요');
@@ -146,6 +169,7 @@ function onMessage(m: any) {
       setReplying(false);
       break;
     case 'pending':
+      activity.update({ alive: true, state: 'waiting' });
       note('sys', `관리자가 묻는 중: ${m.pending?.tool ?? '질문'} → 대화 탭에서 답해 주세요`);
       break;
     case 'result':
@@ -184,6 +208,7 @@ function connect(name: string) {
     sock.onclose = (e) => {
       ws = null;
       setReplying(false);
+      activity.update({ alive: false });
       setStatus('off', e.code === 4401 ? '토큰 필요 (메인 화면에서 입력)' : '연결 끊김 · 다시 붙는 중');
       if (e.code === 4401) return;
       setTimeout(open, retry);
