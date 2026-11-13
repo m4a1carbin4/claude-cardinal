@@ -76,7 +76,15 @@ export function setReplying(on: boolean) {
 
 const typingIn = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
 
-export function StageVoice({ onText, onWake }: { onText: (text: string, send: boolean) => void; onWake?: () => void }) {
+export function StageVoice({
+  onText,
+  onWake,
+  onListen,
+}: {
+  onText: (text: string, send: boolean) => void;
+  onWake?: () => void;
+  onListen?: () => void;
+}) {
   const [asrSettings, setAsrSettings] = useState<AsrSettings>(loadAsrSettings);
   const [vs, setVs] = useState<VoiceSettings>(loadVoice);
   const [asr, setAsr] = useState<AsrStatus>({});
@@ -97,8 +105,8 @@ export function StageVoice({ onText, onWake }: { onText: (text: string, send: bo
   const timer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const idle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // 콜백 안에서 최신 값 쓰기용
-  const live = useRef({ asrSettings, vs, onText, onWake });
-  live.current = { asrSettings, vs, onText, onWake };
+  const live = useRef({ asrSettings, vs, onText, onWake, onListen });
+  live.current = { asrSettings, vs, onText, onWake, onListen };
 
   useEffect(() => subscribeAsr(setAsr), []);
 
@@ -199,6 +207,8 @@ export function StageVoice({ onText, onWake }: { onText: (text: string, send: bo
       onLevel: level,
       onSpeech: (on) => {
         if (on) startedAwake.current = isAwake();
+        // 호출어 대기 중엔 이름을 부를 때까지 안 끊음 (아무 소리에나 캐릭터가 멈추지 않게)
+        if (on && (!live.current.vs.wake || isAwake())) live.current.onListen?.();
         setSpeaking(on);
       },
       onUtterance: (audio) => void run(audio, true, { awake: startedAwake.current }),
@@ -239,6 +249,7 @@ export function StageVoice({ onText, onWake }: { onText: (text: string, send: bo
       return;
     }
     preloadAsr(asrSettings.model);
+    live.current.onListen?.();
     setRecording(true);
     setSeconds(0);
     const t0 = Date.now();
@@ -251,6 +262,7 @@ export function StageVoice({ onText, onWake }: { onText: (text: string, send: bo
     held.current = true;
     clearTimeout(idle.current);
     setNote('');
+    live.current.onListen?.();
     setRecording(true);
     preloadAsr(live.current.asrSettings.model);
     try {

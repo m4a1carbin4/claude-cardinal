@@ -74,6 +74,17 @@ The turn-taking follows [ming-voice](https://github.com/JMS1717/ming-voice). Dif
 | Modes | hands-free / wake word / push-to-talk (Space) | hands-free (+ wake word) / push-to-talk (Space) / button |
 | Wake word | transcribes the first seconds while you're still talking to check the name; name alone → chime; 8 s after a reply without the name | checks after the utterance is transcribed; name alone → Arona answers; no name needed during a stage turn and 8 s (adjustable) after the reply |
 
+## Voice (TTS)
+
+The character **reads its lines aloud** with [ZONOS3-Mini](https://huggingface.co/Zyphra/ZONOS3-Mini), streamed per line (first audio in ~0.15–0.3 s on the host CPU), with lip sync from the audio level. Click the `🔊` row in the left panel for settings. Full details (Korean): [stage.md › 목소리](stage.md#목소리-tts).
+
+- Two engines speaking the same v2 API: **device** (in-browser WebGPU, upstream `servers/web` `engine.js` in a worker, ~1 GB of model shards on first load, cached; served from `/stage-tts/engine` and `/stage-tts/models`) and **host** (Cardinal proxies `/api/stage/tts/v2/*` to a local CPU `zonos3-server`, chunks passed through unbuffered)
+- Mode (per browser): **auto** (device if WebGPU is real hardware with enough buffer limits and a bench line runs at RTF ≤ 0.6, host meanwhile/otherwise), device, host, off. The panel shows the active engine, voice, TTFA and RTF
+- Lines are generated in order in the background while the previous one plays, scheduled gaplessly on one AudioContext; stop / sending / a new stage turn / starting to speak cancels playback and in-flight generation
+- Voice design dialog: default voices (preview), slerp blends, upload or record a reference (mono 44.1 kHz, ≤ 30 s), language, speaker mode, `condition_values` (speaking rate, loudness), temperature, speaker CFG, seed, steering controls when the engine has a bundle; "character speaks" test line; **save** to the server store (`~/.cardinal/stage-tts/voices/<id>/voice.json` + `reference.wav` + 192-d embedding), set as the character voice, edit, delete. Both engines use saved voices (default → same id; blend → embedding `.npy`; clip → the wav on host, the embedding on device), re-registering after an engine restart
+- Config: `CARDINAL_STAGE_TTS_URL` (default `http://127.0.0.1:1919`, empty = off), `CARDINAL_STAGE_TTS_CMD` / `CARDINAL_STAGE_TTS_CWD` (Cardinal starts/stops zonos3-server), `CARDINAL_STAGE_TTS_ENGINE`, `CARDINAL_STAGE_TTS_MODELS`, `CARDINAL_STAGE_TTS_VOICES`
+- Not verified on a real GPU yet (the test box only gave headless Chrome SwiftShader; the device path was checked functionally there)
+
 ## Expressions
 
 Named by showing each one. The admin prompt has the same list.

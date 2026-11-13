@@ -6,6 +6,9 @@ import { mountPanelToggle } from '../stage/panelToggle';
 import { aronaCharacter, aronaModel, BACKGROUND } from './arona';
 import { lastEmotion, toLines } from './lines';
 import { mountMic, setReplying } from './mic';
+import { TtsManager } from './tts/manager';
+import { mountTts } from './tts/panel';
+import { stagePlayer } from './tts/player';
 import './stage.css';
 
 // 관리자가 스테이지에서 온 말인지 알아보는 표시 (관리자 프롬프트에 같은 말이 있음)
@@ -30,7 +33,11 @@ const echo = $<HTMLDivElement>('echo');
 
 // spine 로더는 헤더를 못 붙여서 리소스 요청엔 쿠키로 토큰을 실어 보냄
 const token = currentToken();
-if (token) document.cookie = `cardinal_token=${encodeURIComponent(token)}; path=/stage-assets; SameSite=Strict`;
+if (token) {
+  document.cookie = `cardinal_token=${encodeURIComponent(token)}; path=/stage-assets; SameSite=Strict`;
+  // 기기 음성 엔진 워커가 받는 엔진 파일·모델 조각도 같은 방식 (/stage-tts)
+  document.cookie = `cardinal_token=${encodeURIComponent(token)}; path=/stage-tts; SameSite=Strict`;
+}
 
 try {
   readAll.checked = localStorage.getItem(READ_ALL_KEY) === '1';
@@ -74,10 +81,35 @@ const stage = new CharacterStage({
   character: aronaCharacter,
   renderer,
   background: new BackgroundLayer([{ image: BACKGROUND, depth: 0.5 }], 20),
+  // 음성(TTS): 생성 중인 PCM 을 빈틈 없이 이어 재생, 소리 크기로 입 모양 (tts/player.ts)
+  agent: { player: stagePlayer },
 });
 mountPanelToggle([$('panel')]);
-// 개발자 도구에서 만져 보기용: stage.agent.play({ text, emotion }), renderer.setExpression('05')
-Object.assign(window, { stage, renderer });
+
+// ---- 음성 (ZONOS3-Mini 스트리밍 TTS, docs/stage.md "목소리") ----
+const tts = new TtsManager();
+void tts.init();
+// 소리가 있는 대사는 끝나고 잠깐만 쉬고 다음 줄 (기본 0.8초는 말이 끊겨 들림)
+const TTS_HOLD_MS = 250;
+
+/** 대사 한 줄: 말할 수 있으면 음성도 같이 (생성은 큐에 넣는 순간 뒤에서 시작해서 앞 줄 재생 중에 다음 줄을 만듦) */
+function say(text: string, emotion: number | null) {
+  const audio = tts.line(text);
+  return stage.agent.play({ text, emotion, audio, holdMs: audio ? TTS_HOLD_MS : undefined });
+}
+
+/** 말 끊기: 지금 대사와 기다리는 대사, 생성 중인 음성까지 */
+function hush() {
+  stage.agent.interrupt();
+  tts.stopAll();
+}
+
+mountTts($('tts'), tts, (text, audio) => {
+  hush();
+  void stage.agent.play({ text, audio, holdMs: TTS_HOLD_MS });
+});
+// 개발자 도구에서 만져 보기용: stage.agent.play({ text, emotion }), renderer.setExpression('05'), tts.state
+Object.assign(window, { stage, renderer, tts });
 
 // ---- 관리자 세션 연결 ----
 
@@ -88,7 +120,7 @@ let emotion: number | null = null; // 이번 턴 표정 (문단마다 [emo:NN] �
 function speak(text: string) {
   const lines = toLines(text, emotion);
   emotion = lastEmotion(lines, emotion);
-  for (const l of lines) void stage.agent.play({ text: l.text, emotion: l.emotion });
+  for (const l of lines) void say(l.text, l.emotion);
 }
 
 function onMessage(m: any) {
@@ -104,6 +136,8 @@ function onMessage(m: any) {
     }
     case 'turn_start':
       ourTurn = String(m.prompt ?? '').startsWith(MARK);
+      // 스테이지에서 새로 말을 걸었으면 하던 말은 끊음
+      if (ourTurn) hush();
       emotion = null;
       setReplying(ourTurn); // 호출어: 스테이지 턴이 도는 동안과 끝난 뒤 잠깐은 이름 없이 받음
       break;
@@ -165,6 +199,7 @@ function sendText(text: string): boolean {
     note('sys', '관리자에 안 붙어 있어요');
     return false;
   }
+  hush();
   ws.send(JSON.stringify({ type: 'send', id: `st${Date.now().toString(36)}`, text: `${MARK} ${text}`, wait: false }));
   note('me', text);
   showEcho(text);
@@ -187,7 +222,11 @@ mountMic($('mic'), (text, send) => {
 }, () => {
   // 호출어: 이름만 불렀을 때 대답 (관리자에겐 안 보냄)
   const reply = WAKE_REPLIES[Math.floor(Math.random() * WAKE_REPLIES.length)];
-  void stage.agent.play({ text: reply.text, emotion: reply.emotion });
+  hush();
+  void say(reply.text, reply.emotion);
+}, () => {
+  // 사람이 말하기 시작하면 캐릭터는 말을 멈춤 (끼어들기)
+  if (stage.agent.busy) hush();
 });
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -196,7 +235,7 @@ input.addEventListener('keydown', (e) => {
   }
 });
 stopBtn.addEventListener('click', () => {
-  stage.agent.interrupt();
+  hush();
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'interrupt', id: `st${Date.now().toString(36)}` }));
 });
 

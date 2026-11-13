@@ -26,6 +26,13 @@ class Settings:
     drive_max_upload: int  # 웹에서 올리는 파일 하나 한도 (바이트)
     admin: str | None  # 관리자 세션 이름 (CARDINAL_ADMIN, 기본 cardinal). SDK 모드에서 서버가 띄우는 마스터. None = 끔
     stage_assets: Path  # 스테이지 페이지(/stage) 캐릭터·배경 파일 (CARDINAL_STAGE_ASSETS). 저장소엔 안 넣음
+    # 스테이지 음성 (ZONOS3-Mini, docs/stage.md "목소리")
+    stage_tts_url: str  # 호스트 엔진 zonos3-server 주소 (CARDINAL_STAGE_TTS_URL, 기본 http://127.0.0.1:1919, 빈 값 = 끔)
+    stage_tts_cmd: str | None  # 있으면 카디널이 이 명령으로 zonos3-server 를 띄우고 끔 (CARDINAL_STAGE_TTS_CMD)
+    stage_tts_cwd: Path | None  # 위 명령의 작업 폴더 (CARDINAL_STAGE_TTS_CWD)
+    stage_tts_engine: Path  # 기기 엔진 파일 engine.js·worker.js·codec-worker.js (CARDINAL_STAGE_TTS_ENGINE)
+    stage_tts_models: Path  # 기기 엔진 모델 조각 (HF Zyphra/ZONOS3-Mini 의 web/, CARDINAL_STAGE_TTS_MODELS)
+    stage_tts_voices: Path  # 저장한 목소리 (CARDINAL_STAGE_TTS_VOICES)
 
     @property
     def sessions_dir(self) -> Path:
@@ -65,4 +72,10 @@ def load() -> Settings:
         drive_max_upload=int(os.environ.get("CARDINAL_DRIVE_MAX_MB", "1024")) * 1024 * 1024,
         admin=_admin_name(os.environ.get("CARDINAL_ADMIN", "cardinal")),
         stage_assets=Path(os.environ.get("CARDINAL_STAGE_ASSETS", home / "stage-assets")).expanduser(),
+        stage_tts_url=os.environ.get("CARDINAL_STAGE_TTS_URL", "http://127.0.0.1:1919").strip().rstrip("/"),
+        stage_tts_cmd=os.environ.get("CARDINAL_STAGE_TTS_CMD") or None,
+        stage_tts_cwd=Path(os.environ["CARDINAL_STAGE_TTS_CWD"]).expanduser() if os.environ.get("CARDINAL_STAGE_TTS_CWD") else None,
+        stage_tts_engine=Path(os.environ.get("CARDINAL_STAGE_TTS_ENGINE", home / "stage-tts" / "engine")).expanduser(),
+        stage_tts_models=Path(os.environ.get("CARDINAL_STAGE_TTS_MODELS", home / "stage-tts" / "models")).expanduser(),
+        stage_tts_voices=Path(os.environ.get("CARDINAL_STAGE_TTS_VOICES", home / "stage-tts" / "voices")).expanduser(),
     )

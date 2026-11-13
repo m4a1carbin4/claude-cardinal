@@ -18,9 +18,10 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import terminal
@@ -36,6 +37,7 @@ from .running import running_elsewhere
 from .mcp_server import CardinalMcp
 from .sdk import SdkError, SdkManager, redact_options, unredact
 from .sessions import SessionError, Sessions
+from .stage_tts import StageTts, TtsError
 
 log = logging.getLogger("cardinal")
 # 웹 UI (web/, Vite + React) 빌드 결과. cd web && pnpm install && pnpm build
@@ -98,6 +100,16 @@ class Hub:
 
 
 # ---------- 요청 모델 ----------
+
+
+class VoiceIn(BaseModel):
+    """스테이지 목소리 저장 (stage_tts.py)"""
+    recipe: dict[str, Any]
+    clip_base64: str | None = None  # 참고 음성 (wav, 모노 44.1kHz, 30초 이하). 고칠 땐 안 주면 그대로
+
+
+class ActiveVoiceIn(BaseModel):
+    id: str | None = None
 
 
 class RouteIn(BaseModel):
@@ -284,6 +296,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     cmcp = CardinalMcp(settings, db, sessions, router, ingestor, drive)
     sdk_mgr.mcp_secret = cmcp.secret
     local = LocalAdapter(channel_hub.publish)
+    # 스테이지 음성: 호스트 TTS 프록시·목소리 저장소 (stage_tts.py)
+    tts = StageTts(settings)
     router.add_adapter(local)
 
     async def reconnect_tmux_mcp(rows: list[dict]) -> None:
@@ -339,6 +353,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         reconnect_task = asyncio.create_task(reconnect_tmux_mcp(
             [r for r in db.sessions() if r["backend"] == "tmux" and r["alive"] and r.get("mcp")]))
         revive_task = asyncio.create_task(revive_tmux())
+        await tts.startup()
         await local.start(router.handle)
         discord = None
         app.state.discord = None
@@ -381,6 +396,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             reconnect_task.cancel()
             revive_task.cancel()
             await sdk_mgr.shutdown()
+            await tts.shutdown()
             await mcp_ctx.__aexit__(None, None, None)
             if discord:
                 await discord.stop()
@@ -908,11 +924,96 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return FileResponse(f)
         raise HTTPException(404, "not found")
 
+    # ---------- 스테이지 음성 (TTS, docs/stage.md "목소리") ----------
+
+    def tts_err(e: TtsError) -> HTTPException:
+        return HTTPException(e.status, str(e))
+
+    @app.get("/api/stage/tts/status", dependencies=api)
+    async def stage_tts_status():
+        return await tts.status()
+
+    # 호스트 엔진(zonos3-server) 으로 그대로 넘김. 스트리밍 PCM 은 받는 조각마다 바로 흘려보냄 (쌓지 않음).
+    # 브라우저가 끊으면(말 끊기) 위쪽 연결도 닫아서 zonos3-server 도 생성을 멈춤
+    @app.api_route("/api/stage/tts/v2/{path:path}", methods=["GET", "POST"], dependencies=api)
+    async def stage_tts_proxy(path: str, request: Request):
+        body = await request.body() if request.method == "POST" else None
+        try:
+            # 카디널 토큰(?token=)은 zonos3-server 로 안 넘김
+            query = urlencode([(k, v) for k, v in request.query_params.multi_items() if k != "token"])
+            r = await tts.open_upstream(request.method, f"v2/{path}", query, dict(request.headers), body)
+        except TtsError as e:
+            raise tts_err(e)
+        headers = {k: v for k, v in r.headers.items()
+                   if k.lower() not in ("connection", "keep-alive", "transfer-encoding", "content-length", "content-encoding",
+                                        "access-control-allow-origin")}
+        headers["Cache-Control"] = "no-store"
+        headers["X-Accel-Buffering"] = "no"  # 앞에 nginx 가 있어도 모아 두지 않게
+
+        async def pump():
+            try:
+                async for chunk in r.content.iter_any():
+                    yield chunk
+            finally:
+                r.close()
+
+        return StreamingResponse(pump(), status_code=r.status, headers=headers)
+
+    @app.get("/api/stage/voices", dependencies=api)
+    async def stage_voices():
+        return tts.list_voices()
+
+    @app.post("/api/stage/voices", status_code=201, dependencies=api)
+    async def stage_voice_save(body: VoiceIn):
+        try:
+            return tts.save_voice(body.recipe, body.clip_base64)
+        except TtsError as e:
+            raise tts_err(e)
+
+    @app.put("/api/stage/voices/active", dependencies=api)
+    async def stage_voice_active(body: ActiveVoiceIn):
+        try:
+            tts.set_active(body.id)
+        except TtsError as e:
+            raise tts_err(e)
+        return {"active": tts.active()}
+
+    @app.get("/api/stage/voices/{vid}/clip", dependencies=api)
+    async def stage_voice_clip(vid: str):
+        try:
+            return FileResponse(tts.clip_path(vid), media_type="audio/wav")
+        except TtsError as e:
+            raise tts_err(e)
+
+    @app.delete("/api/stage/voices/{vid}", dependencies=api)
+    async def stage_voice_delete(vid: str):
+        try:
+            tts.delete_voice(vid)
+        except TtsError as e:
+            raise tts_err(e)
+        return {"ok": True}
+
+    # 기기 엔진(브라우저 WebGPU): engine.js 와 워커, 모델 조각. 워커가 헤더를 못 붙여서 토큰은 쿠키로도 받음 (경로 /stage-tts)
+    @app.get("/stage-tts/{kind}/{path:path}", include_in_schema=False)
+    async def stage_tts_files(kind: str, path: str, request: Request):
+        if not (token_ok(request.query_params.get("token"), request.headers.get("authorization"))
+                or token_ok(request.cookies.get("cardinal_token"), None)):
+            raise HTTPException(401, "unauthorized")
+        roots = {"engine": settings.stage_tts_engine, "models": settings.stage_tts_models}
+        if kind not in roots:
+            raise HTTPException(404, "not found")
+        root = roots[kind].resolve()
+        f = (root / path).resolve()
+        if root in f.parents and f.is_file():
+            # 엔진 파일은 다시 빌드할 수 있으니 매번 확인, 모델 조각은 워커가 Cache Storage 에 따로 둠
+            return FileResponse(f, headers={"Cache-Control": "no-cache"})
+        raise HTTPException(404, "not found")
+
     # 웹 UI 정적 파일 (assets/*, banner.png 등). 맨 마지막에 등록해서 API 라우트를 가로채지 않음.
     # 빌드를 나중에 해도 서버 재시작 없이 바로 보이게 요청 때마다 파일을 찾음
     @app.get("/{path:path}", include_in_schema=False)
     async def web_static(path: str):
-        if path.startswith(("api/", "ws/", "stage-assets/")):
+        if path.startswith(("api/", "ws/", "stage-assets/", "stage-tts/")):
             raise HTTPException(404, "not found")
         f = (WEB_DIST / path).resolve()
         # dist 밖으로 나가는 경로(../) 차단
