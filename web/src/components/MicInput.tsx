@@ -169,7 +169,10 @@ export function AsrOptions({
 }) {
   const loading = asr.loading?.model === settings.model ? asr.loading : undefined;
   const m = modelOf(settings.model);
-  const size = asr.device ? m.size[asr.device] : m.size['webgpu-f16'];
+  // CPU 로만이면 WASM 모델 (장치 확인 결과와 상관없이)
+  const device = settings.cpuOnly ? 'wasm' : asr.device;
+  const size = device ? m.size[device] : m.size['webgpu-f16'];
+  const ready = asr.ready === settings.model && asr.cpu === settings.cpuOnly;
   return (
     <>
       <label>
@@ -195,16 +198,30 @@ export function AsrOptions({
       <label className="check">
         <input type="checkbox" checked={settings.autoSend} onChange={(e) => update({ autoSend: e.target.checked })} /> {autoSendLabel}
       </label>
+      <label className="check" title="GPU 가 다른 일(이미지 생성 등)로 꽉 차 있을 때. 느리지만 GPU 메모리를 안 씀">
+        <input
+          type="checkbox"
+          checked={settings.cpuOnly}
+          disabled={busy}
+          onChange={(e) => {
+            const cpuOnly = e.target.checked;
+            update({ cpuOnly });
+            // 이미 불러온 모델이 있으면 바로 새 방식으로 다시 불러옴 (이전 것은 워커가 버림)
+            if (asr.ready || asr.loading) preloadAsr(settings.model, cpuOnly);
+          }}
+        />{' '}
+        CPU 로만 (WebGPU 안 씀)
+      </label>
       <div className="row wrap small muted">
         <span>
-          {asr.device ? DEVICE_LABEL[asr.device] : '장치 확인 전'} · 받을 크기 약 {size}MB (처음 한 번, 브라우저에 저장)
+          {device ? DEVICE_LABEL[device] : '장치 확인 전'} · 받을 크기 약 {size}MB (처음 한 번, 브라우저에 저장)
         </span>
-        {asr.ready === settings.model ? (
+        {ready ? (
           <span className="badge ok">준비됨</span>
         ) : loading ? (
           <span className="badge info">받는 중 {Math.round(loading.progress)}%</span>
         ) : (
-          <button type="button" className="ghost small" onClick={() => preloadAsr(settings.model)}>
+          <button type="button" className="ghost small" onClick={() => preloadAsr(settings.model, settings.cpuOnly)}>
             미리 받기
           </button>
         )}

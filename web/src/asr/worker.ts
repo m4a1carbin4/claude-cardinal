@@ -8,7 +8,9 @@ env.allowLocalModels = false;
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
 let devicePromise: Promise<AsrDevice> | null = null;
-function detectDevice(): Promise<AsrDevice> {
+// cpu: GPU 를 안 씀 (GPU 가 다른 일로 꽉 차 있을 때). WASM 으로만
+function detectDevice(cpu: boolean): Promise<AsrDevice> {
+  if (cpu) return Promise.resolve('wasm');
   devicePromise ??= (async () => {
     const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<{ features: Set<string> } | null> } }).gpu;
     if (!gpu) return 'wasm';
@@ -24,12 +26,12 @@ function detectDevice(): Promise<AsrDevice> {
 }
 
 // 한 번에 모델 하나만 메모리에 둠 (바꾸면 이전 것은 버림)
-let current: { key: AsrModelKey; pipe: Promise<AutomaticSpeechRecognitionPipeline> } | null = null;
+let current: { key: AsrModelKey; cpu: boolean; pipe: Promise<AutomaticSpeechRecognitionPipeline> } | null = null;
 
-async function load(key: AsrModelKey): Promise<AutomaticSpeechRecognitionPipeline> {
-  if (current?.key === key) return current.pipe;
+async function load(key: AsrModelKey, cpu: boolean): Promise<AutomaticSpeechRecognitionPipeline> {
+  if (current?.key === key && current.cpu === cpu) return current.pipe;
   const old = current;
-  const device = await detectDevice();
+  const device = await detectDevice(cpu);
   post({ type: 'device', device });
   const m = modelOf(key);
   const pipe = (async () => {
@@ -43,10 +45,10 @@ async function load(key: AsrModelKey): Promise<AutomaticSpeechRecognitionPipelin
           post({ type: 'progress', model: key, progress: info.progress, loaded: info.loaded, total: info.total });
       },
     })) as AutomaticSpeechRecognitionPipeline;
-    post({ type: 'ready', model: key, device });
+    post({ type: 'ready', model: key, device, cpu });
     return p;
   })();
-  current = { key, pipe };
+  current = { key, cpu, pipe };
   pipe.catch(() => {
     if (current?.pipe === pipe) current = null;
   });
@@ -59,14 +61,14 @@ let queue: Promise<unknown> = Promise.resolve();
 self.onmessage = (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
   if (msg.type === 'load') {
-    load(msg.model).catch((err) => post({ type: 'error', message: String(err?.message ?? err) }));
+    load(msg.model, msg.cpu).catch((err) => post({ type: 'error', message: String(err?.message ?? err) }));
     return;
   }
   if (msg.type === 'transcribe') {
     queue = queue.then(async () => {
       const t0 = performance.now();
       try {
-        const pipe = await load(msg.model);
+        const pipe = await load(msg.model, msg.cpu);
         const long = msg.audio.length > 16_000 * 30;
         const out = await pipe(msg.audio, {
           ...(msg.language ? { language: msg.language } : {}),

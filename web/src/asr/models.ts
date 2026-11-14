@@ -80,12 +80,12 @@ export const ASR_LANGUAGES: { id: string; label: string }[] = [
 
 // 워커 ↔ 화면 메시지
 export type ToWorker =
-  | { type: 'load'; model: AsrModelKey }
-  | { type: 'transcribe'; id: number; model: AsrModelKey; audio: Float32Array; language: string };
+  | { type: 'load'; model: AsrModelKey; cpu: boolean }
+  | { type: 'transcribe'; id: number; model: AsrModelKey; audio: Float32Array; language: string; cpu: boolean };
 
 export type FromWorker =
   | { type: 'device'; device: AsrDevice }
   | { type: 'progress'; model: AsrModelKey; progress: number; loaded: number; total: number }
-  | { type: 'ready'; model: AsrModelKey; device: AsrDevice }
+  | { type: 'ready'; model: AsrModelKey; device: AsrDevice; cpu: boolean }
   | { type: 'result'; id: number; text: string; ms: number }
   | { type: 'error'; id?: number; message: string };
