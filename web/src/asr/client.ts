@@ -3,6 +3,7 @@ import { type AsrDevice, type AsrModelKey, type FromWorker, defaultAsrLanguage }
 
 export interface AsrStatus {
   device?: AsrDevice;
+  cpu?: boolean; // 준비된 모델이 CPU 로만 불러온 것인지
   loading?: { model: AsrModelKey; progress: number; loaded: number; total: number };
   ready?: AsrModelKey;
   error?: string;
@@ -32,7 +33,7 @@ function getWorker(): Worker {
         setStatus({ loading: { model: m.model, progress: m.progress, loaded: m.loaded, total: m.total }, error: undefined });
         break;
       case 'ready':
-        setStatus({ ready: m.model, device: m.device, loading: undefined, error: undefined });
+        setStatus({ ready: m.model, device: m.device, cpu: m.cpu, loading: undefined, error: undefined });
         break;
       case 'result':
         waiting.get(m.id)?.resolve({ text: m.text, ms: m.ms });
@@ -56,16 +57,22 @@ export function subscribeAsr(fn: (s: AsrStatus) => void): () => void {
   return () => listeners.delete(fn);
 }
 
-export function preloadAsr(model: AsrModelKey) {
-  if (status.ready === model) return;
-  getWorker().postMessage({ type: 'load', model });
+// cpu 를 안 주면 저장된 설정("CPU 로만")을 따름
+export function preloadAsr(model: AsrModelKey, cpu = loadAsrSettings().cpuOnly) {
+  if (status.ready === model && status.cpu === cpu) return;
+  getWorker().postMessage({ type: 'load', model, cpu });
 }
 
-export function transcribe(audio: Float32Array, model: AsrModelKey, language: string): Promise<{ text: string; ms: number }> {
+export function transcribe(
+  audio: Float32Array,
+  model: AsrModelKey,
+  language: string,
+  cpu = loadAsrSettings().cpuOnly,
+): Promise<{ text: string; ms: number }> {
   const id = nextId++;
   return new Promise((resolve, reject) => {
     waiting.set(id, { resolve, reject });
-    getWorker().postMessage({ type: 'transcribe', id, model, audio, language }, [audio.buffer]);
+    getWorker().postMessage({ type: 'transcribe', id, model, audio, language, cpu }, [audio.buffer]);
   });
 }
 
@@ -114,11 +121,12 @@ export interface AsrSettings {
   model: AsrModelKey;
   language: string;
   autoSend: boolean;
+  cpuOnly: boolean; // GPU(WebGPU) 를 안 쓰고 CPU(WASM) 로만. GPU 가 다른 일로 꽉 찼을 때
 }
 
 const KEY = 'cardinal.asr';
 export function loadAsrSettings(): AsrSettings {
-  const defaults: AsrSettings = { model: 'turbo', language: defaultAsrLanguage(), autoSend: false };
+  const defaults: AsrSettings = { model: 'turbo', language: defaultAsrLanguage(), autoSend: false, cpuOnly: false };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') };
   } catch {

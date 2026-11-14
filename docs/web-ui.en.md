@@ -106,7 +106,7 @@ The settings form is filled with the values the server redacted (`***` in `env` 
 
 The 🎤 button above the input box: click to record, click again to stop. The audio is turned into text **inside the browser** with Whisper (transformers.js `@huggingface/transformers` 4.3.1) and appended to the input box. Only the text goes to the server, never the audio.
 
-- Model (⚙): Whisper base (fast) / small / **large-v3-turbo (default, accurate)**. Uses WebGPU when available, WASM (CPU) otherwise, and picks files to match (turbo on WebGPU f16: q4f16, about 564MB). Downloaded once from Hugging Face and kept in the browser cache. "미리 받기" downloads ahead of time; it also downloads while you record
+- Model (⚙): Whisper base (fast) / small / **large-v3-turbo (default, accurate)**. Uses WebGPU when available, WASM (CPU) otherwise; **CPU 로만 (WebGPU 안 씀)** forces WASM even with a GPU (for when the GPU is full with other work: slower, but uses no GPU memory; toggling reloads the model right away), and picks files to match (turbo on WebGPU f16: q4f16, about 564MB). Downloaded once from Hugging Face and kept in the browser cache. "미리 받기" downloads ahead of time; it also downloads while you record
 - Language: defaults to the browser language (ko-KR → Korean). "Auto" exists but in testing it turned Korean speech into an English sentence, so it's not recommended
 - "인식되면 바로 보내기" (send on recognition): skip the input box and send to the session directly
 - Recordings over 30s are recognized in overlapping 30s chunks; recording stops itself at 5 minutes

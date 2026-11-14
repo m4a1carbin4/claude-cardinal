@@ -9,7 +9,7 @@ import './tts.css';
 const MODES: { id: TtsMode; label: string; hint: string }[] = [
   { id: 'auto', label: '자동', hint: 'WebGPU 가 되고 시험 생성이 충분히 빠르면 기기, 아니면 호스트' },
   { id: 'device', label: '기기', hint: '이 브라우저의 GPU 로 생성 (처음엔 모델 ~1GB 받음)' },
-  { id: 'host', label: '호스트', hint: '카디널 서버 컴퓨터의 zonos3-server(CPU) 로 생성' },
+  { id: 'host', label: '호스트 CPU', hint: '카디널 서버 컴퓨터의 zonos3-server(CPU) 로 생성. 이 브라우저의 GPU(WebGPU)는 안 씀 (기기 엔진도 안 불러옴)' },
   { id: 'off', label: '끔', hint: '말풍선만' },
 ];
 
