@@ -1,0 +1,6 @@
+# 의존성 설치 스크립트: 웹 UI 는 브라우저에서 돌아서 필요 없음 (pnpm 12 는 정하지 않으면 설치를 멈춤)
+#  onnxruntime-node: @huggingface/transformers 의 Node 용 (브라우저는 onnxruntime-web)
+#  protobufjs: postinstall 은 버전 확인뿐
+allowBuilds:
+  onnxruntime-node: false
+  protobufjs: false
