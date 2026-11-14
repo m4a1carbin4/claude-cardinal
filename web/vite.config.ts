@@ -14,6 +14,7 @@ export default defineConfig({
       '/api': target,
       '/ws': { target, ws: true },
       '/stage-assets': target,
+      '/stage-tts': target,
     },
   },
   // 메인 화면 + 스테이지 페이지 (/stage, docs/stage.md)
