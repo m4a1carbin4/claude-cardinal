@@ -109,6 +109,21 @@ Named by showing each one. The admin prompt has the same list.
 | 15 | troubled | 32 | big smile |
 | 16 | embarrassed fluster (sweat) | 99 | calm, eyes closed |
 
+## Admin activity badge
+
+A small badge beside the character's head (right of the halo) shows what the admin session is doing. It stays visible with panels hidden and on small phone screens (pushed inside the viewport on narrow screens).
+
+| State | Badge | When |
+| --- | --- | --- |
+| Idle | hidden | idle |
+| Thinking | three bouncing dots | busy, no tool |
+| Working | spinner + tool name (the `mcp__server__` prefix is stripped) | busy, tool running |
+| Needs you | amber `!`, pulsing | waiting (question or permission) |
+
+Alerts: when an answer is needed the tab title gets a `❗` prefix. If it needs you, or a task longer than 15 s finishes, while you are away (another tab/app), the app badge (when installed as a PWA) and a `✓` title appear and clear when you return. The panel's "sound" checkbox adds a short chime (rising pair when an answer is needed, falling pair when a long task ends; only after you have touched the page once, a browser rule). Sound is off by default. No animation with reduced-motion.
+
+Code: `web/src/stage-page/activity.ts` (try it in dev tools: `activity.update({ alive: true, state: 'busy', tool: 'Bash' })`).
+
 ## Install as an app (PWA)
 
 `/stage` is a PWA (the main page `/` installs separately the same way: `web/public/cardinal.webmanifest`, same service worker): Android Chrome and others offer "Install app / Add to Home screen" (it then opens `/stage` without the address bar).
