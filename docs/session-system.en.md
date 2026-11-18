@@ -84,6 +84,7 @@ claude shows a "do you trust this folder" dialog in a folder it hasn't seen. Unt
 - **No waiting**: only a human (or `--trust`) can clear it, so `new --wait`/`wait` return right away (`new --wait` exits 1 with a hint) and `send` is rejected immediately. Server deliveries fail at once with the reason instead of sitting `pending` for 600s.
 - **`--trust`** (API `trust: true`): if the dialog appears during creation, choose "Yes, I trust this folder" (waits up to 20s, inside the create lock). Only when explicitly given.
   - `Enter` is pressed only after the screen shows the cursor (`❯`) on the "Yes" line; otherwise `Down` is pressed again. Right after the dialog is drawn it doesn't take keys yet, so the old way of sending `Down` and `Enter` immediately could lose `Down` and pick the default "No, exit", which quit claude (3 out of 3 times on Claude Code 2.1.309).
+  - The **"Adding a new directory"** dialog (`No, exit` / `Yes, add it`) is handled the same way. The server starts workers with `--add-dir=<web drive>`, and since Claude Code 2.1.327 that dialog appears in every new session where the folder hasn't been used yet (it can follow the trust dialog). `Down` wraps around in it (pressed on "Yes" it goes back to "No"), so `Down` is only sent while the cursor is on "No".
 - Once trusted, claude remembers the folder. The default workspace also shows it once on first use.
 
 ### Hook injection
