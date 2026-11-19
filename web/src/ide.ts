@@ -5,7 +5,8 @@ function encodePath(p: string): string {
   return p.split('/').map(encodeURIComponent).join('/');
 }
 
-/** 이 기기에서 바로 여는 링크: 브라우저가 이 서버와 같은 기기에서 도는 경우 */
+/** 이 기기에서 바로 여는 링크: 브라우저가 이 서버와 같은 기기에서 도는 경우.
+ * windowId=_blank: 이미 열려 있는 VS Code 창을 재활용하지 않고 새 창으로 (세션마다 창이 따로) */
 export function ideUrl(cwd: string): string {
-  return `vscode://file${encodePath(cwd)}`;
+  return `vscode://file${encodePath(cwd)}?windowId=_blank`;
 }
