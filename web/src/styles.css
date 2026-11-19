@@ -227,6 +227,9 @@ a.chip:hover { color: var(--text); border-color: var(--accent); }
   color: var(--text); text-decoration: none; background: transparent;
 }
 .open-ide a.button:hover { border-color: var(--accent); }
+.open-ide { flex-wrap: wrap; }
+.open-ide-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.open-ide-edit input { width: 220px; padding: 4px 8px; font-size: 0.85rem; }
 .sv-actions { display: flex; gap: 6px; }
 .tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--surface); align-items: center; overflow-x: auto; }
 .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 9px 14px; color: var(--muted); white-space: nowrap; }

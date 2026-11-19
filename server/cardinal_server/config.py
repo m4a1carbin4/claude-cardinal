@@ -1,6 +1,7 @@
 """환경변수 → 설정. CLI(TS)랑 같은 이름 씀."""
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,7 @@ class Settings:
     drive: Path  # 웹드라이브 (사람·세션이 같이 쓰는 파일 공간, drive.py)
     drive_max_upload: int  # 웹에서 올리는 파일 하나 한도 (바이트)
     admin: str | None  # 관리자 세션 이름 (CARDINAL_ADMIN, 기본 cardinal). SDK 모드에서 서버가 띄우는 마스터. None = 끔
+    ide_host: str | None  # 웹 UI 의 'VS Code 로 열기'가 SSH 원격으로 열 때 대상 (CARDINAL_IDE_HOST, 예 user@my-mac). None = 이 기기에서 열기
     stage_assets: Path  # 스테이지 페이지(/stage) 캐릭터·배경 파일 (CARDINAL_STAGE_ASSETS). 저장소엔 안 넣음
     # 스테이지 음성 (ZONOS3-Mini, docs/stage.md "목소리")
     stage_tts_url: str  # 호스트 엔진 zonos3-server 주소 (CARDINAL_STAGE_TTS_URL, 기본 http://127.0.0.1:1919, 빈 값 = 끔)
@@ -53,6 +55,15 @@ def _admin_name(v: str) -> str | None:
     return None if v.lower() in ("", "0", "false", "off") else v
 
 
+IDE_HOST_RE = re.compile(r"^[A-Za-z0-9._@:\[\]-]{1,128}$")
+
+
+def _ide_host(v: str) -> str | None:
+    # URL 에 그대로 들어가니 호스트/별칭에 쓰는 글자만 (그 밖이면 안 쓰는 걸로)
+    v = v.strip()
+    return v if IDE_HOST_RE.match(v) else None
+
+
 def load() -> Settings:
     home = Path(os.environ.get("CARDINAL_HOME", Path.home() / ".cardinal")).expanduser()
     return Settings(
@@ -71,6 +82,7 @@ def load() -> Settings:
         drive=Path(os.environ.get("CARDINAL_DRIVE", home / "drive")).expanduser(),
         drive_max_upload=int(os.environ.get("CARDINAL_DRIVE_MAX_MB", "1024")) * 1024 * 1024,
         admin=_admin_name(os.environ.get("CARDINAL_ADMIN", "cardinal")),
+        ide_host=_ide_host(os.environ.get("CARDINAL_IDE_HOST", "")),
         stage_assets=Path(os.environ.get("CARDINAL_STAGE_ASSETS", home / "stage-assets")).expanduser(),
         stage_tts_url=os.environ.get("CARDINAL_STAGE_TTS_URL", "http://127.0.0.1:1919").strip().rstrip("/"),
         stage_tts_cmd=os.environ.get("CARDINAL_STAGE_TTS_CMD") or None,

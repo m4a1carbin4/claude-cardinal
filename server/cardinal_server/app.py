@@ -475,6 +475,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sdk": {"enabled": settings.sdk, "default_backend": "sdk" if settings.sdk else "tmux",
                     "alive": sum(1 for x in sdk_mgr.sessions.values() if x.alive)},
             "admin": admin_status(),
+            "ide_host": settings.ide_host,
         }
 
     def admin_status() -> dict | None:

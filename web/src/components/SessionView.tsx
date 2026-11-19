@@ -32,7 +32,17 @@ const SDK_TABS: { id: Tab; label: string }[] = [
   { id: 'routes', label: '라우트' },
 ];
 
-export function SessionView({ session, version, onGone }: { session: Session; version: number; onGone: () => void }) {
+export function SessionView({
+  session,
+  version,
+  ideHost,
+  onGone,
+}: {
+  session: Session;
+  version: number;
+  ideHost?: string | null;
+  onGone: () => void;
+}) {
   const sdk = session.backend === 'sdk';
   const tabs = sdk ? SDK_TABS : TMUX_TABS;
   const [tab, setTab] = useState<Tab>(sdk ? 'live' : 'terminal');
@@ -107,7 +117,7 @@ export function SessionView({ session, version, onGone }: { session: Session; ve
         </div>
         <div className="sv-meta">
           <span title="작업 폴더">📁 <code>{session.cwd}</code></span>
-          {!session.deleted_at && <OpenInIde cwd={session.cwd} />}
+          {!session.deleted_at && <OpenInIde cwd={session.cwd} serverHost={ideHost} />}
           {sdk && session.sdk_options && (
             <span title="권한 모드 · 모델">
               {session.sdk_options.permission_mode} · {session.sdk_options.model ?? '기본 모델'}
