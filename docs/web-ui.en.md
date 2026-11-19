@@ -162,6 +162,7 @@ If the server runs with `CARDINAL_TOKEN`, open the page once with `?token=…` (
 
 Driven end to end in a real Chrome (Playwright), with no browser console errors:
 
+- **Open in VS Code** next to the working directory in the session detail: a `vscode://file/<cwd>` link, so VS Code opens **on the machine running the browser**. It only opens the right folder when the web UI is opened on the same machine as the server (on another machine the path doesn't exist). **Copy path** is the fallback for browsers/devices that don't open the link. Hidden for deleted sessions.
 - terminal attach and output / Screen tab (scrollback choice) / session info
 - send → reply "7" / paste only → Enter key → "5" / max 2s → "시간 초과 (partial reply)" / free-form key `Escape` → "사람이 중단함" / over 16KB disables the button with a notice
 - Result · Hook events (count) · Routes (add: @mention + auto reply)

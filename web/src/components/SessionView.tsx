@@ -3,6 +3,7 @@ import { api } from '../api';
 import { ago, clock, stateLabel } from '../format';
 import type { Session } from '../types';
 import { DrivePanel } from './DrivePanel';
+import { OpenInIde } from './OpenInIde';
 import { LivePanel, McpPanel, SettingsPanel } from './SdkPanels';
 import { EventsPanel, ReportPanel, RoutesPanel, ScreenPanel, SendPanel } from './SessionPanels';
 
@@ -106,6 +107,7 @@ export function SessionView({ session, version, onGone }: { session: Session; ve
         </div>
         <div className="sv-meta">
           <span title="작업 폴더">📁 <code>{session.cwd}</code></span>
+          {!session.deleted_at && <OpenInIde cwd={session.cwd} />}
           {sdk && session.sdk_options && (
             <span title="권한 모드 · 모델">
               {session.sdk_options.permission_mode} · {session.sdk_options.model ?? '기본 모델'}
