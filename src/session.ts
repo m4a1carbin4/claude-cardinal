@@ -144,9 +144,14 @@ export interface CreateOptions {
 }
 
 // 처음 쓰는 폴더에서 claude 가 띄우는 "이 폴더를 신뢰하냐" 다이얼로그
-const TRUST_PROMPT_RE = /trust this folder/i;
-const TRUST_YES_SELECTED_RE = /❯\s*(?:\d\.\s*)?Yes, I trust/;
+// + --add-dir 로 준 폴더(웹드라이브)가 이 세션에선 처음이면 뜨는 "Adding a new directory" 다이얼로그 (No, exit / Yes, add it).
+// 둘 다 기본 선택이 "No, exit" 라 Enter 만 치면 claude 가 꺼짐. 신뢰 다이얼로그 다음에 이어서 뜰 수도 있음
+const TRUST_PROMPT_RE = /trust this folder|Adding a new directory/i;
+const TRUST_YES_SELECTED_RE = /❯\s*(?:\d\.\s*)?Yes, (?:I trust|add it)/;
+const TRUST_NO_SELECTED_RE = /❯\s*(?:\d\.\s*)?No, /;
 const TRUST_WAIT_MS = 20_000;
+// 다이얼로그를 하나 넘긴 뒤, 다음 다이얼로그가 안 뜨는지 더 지켜보는 시간
+const TRUST_SETTLE_MS = 3_000;
 
 // 작업 폴더 결정. 기록을 지우기 전에 검사해야 잘못된 경로 때문에 이전 세션 기록이 날아가지 않음.
 // claude 는 실제 경로(realpath)로 트랜스크립트 폴더를 만드니까 그걸로 기록 (macOS /tmp → /private/tmp 등)
@@ -186,22 +191,33 @@ function serverParent(): { name: string; instanceId: string } | undefined {
 // --trust: 신뢰 다이얼로그가 뜨면 "Yes, I trust this folder" 로 넘김. 안 뜨고 바로 준비되면 그냥 끝
 async function acceptTrust(name: string, t: string): Promise<boolean> {
   const deadline = Date.now() + TRUST_WAIT_MS;
+  let accepted = false;
+  let settleAt = 0; // 마지막으로 Enter 친 시각 + 유예
   while (Date.now() < deadline) {
     const st = await getStatus(name);
-    if (!st.alive || st.state !== 'starting') return false;
+    if (!st.alive || st.state !== 'starting') return accepted;
+    // 하나 넘기고 나서 다음 다이얼로그가 안 뜬 채 유예가 지나면 끝
+    if (accepted && !st.trustPrompt && Date.now() > settleAt) return true;
     if (st.trustPrompt) {
       // 다이얼로그가 그려진 직후엔 키를 아직 안 받아서 Down 이 씹히고 Enter 만 먹으면 기본값 "No, exit" 로 claude 가 꺼짐.
       // 그래서 커서(❯)가 "Yes" 줄에 온 걸 화면으로 확인한 뒤에만 Enter
       const screen = await tmux.capturePane(t).catch(() => '');
       if (TRUST_YES_SELECTED_RE.test(screen)) {
         await tmux.sendKeys(t, 'Enter');
-        return true;
+        accepted = true;
+        settleAt = Date.now() + TRUST_SETTLE_MS;
+        await sleep(500); // 방금 넘긴 다이얼로그가 화면에서 지워질 때까지 다시 읽지 않음
+        continue;
       }
-      await tmux.sendKeys(t, 'Down');
+      // 이 다이얼로그들은 Down 이 돌아가기도 해서(Yes 에서 또 누르면 No) 커서가 No 에 있는 걸 확인한 때만 누르고, 다시 그려질 때까지 기다림
+      if (TRUST_NO_SELECTED_RE.test(screen)) {
+        await tmux.sendKeys(t, 'Down');
+        await sleep(600);
+      }
     }
     await sleep(300);
   }
-  return false;
+  return accepted;
 }
 
 const CREATE_LOCK_TIMEOUT_MS = 30_000;
@@ -454,7 +470,7 @@ export async function getStatus(name: string): Promise<SessionStatus> {
     restoredInput: s?.restoredInput || undefined,
     stateAt: s?.at,
     event: s?.event,
-    detail: trustPrompt ? `작업 폴더 신뢰 다이얼로그 대기 (${meta.cwd}) — cardinal keys ${name} Down Enter` : s?.detail,
+    detail: trustPrompt ? `신뢰/폴더 추가 다이얼로그 대기 (${meta.cwd}) — cardinal keys ${name} Down Enter` : s?.detail,
     tool: s?.tool,
   };
 }
