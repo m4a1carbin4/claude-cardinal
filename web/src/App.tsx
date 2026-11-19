@@ -175,7 +175,7 @@ export default function App() {
               <DrivePanel />
             </div>
           ) : current ? (
-            <SessionView key={current.id} session={current} version={version} onGone={() => setSelected(null)} />
+            <SessionView key={current.id} session={current} version={version} ideHost={health?.ide_host} onGone={() => setSelected(null)} />
           ) : (
             <div className="welcome">
               <img src="/banner.png" alt="" />

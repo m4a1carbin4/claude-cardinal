@@ -75,6 +75,7 @@ SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… uv run cardinal-server   # wit
 | `CARDINAL_DB` | `$CARDINAL_HOME/cardinal.db` | |
 | `CARDINAL_HOST` / `CARDINAL_PORT` | `127.0.0.1` / `7878` | also `--host`, `--port` |
 | `CARDINAL_TOKEN` | unset | if set, all HTTP/WS need `?token=` or `Authorization: Bearer` |
+| `CARDINAL_IDE_HOST` | none | SSH target the web UI's "Open in VS Code" uses to open remotely (`user@host` or a `~/.ssh/config` alias). Served as `ide_host` in `/api/health`. Ignored if it has unusual characters |
 | `CARDINAL_CLI` | `<repo>/bin/cardinal` | |
 | `DISCORD_TOKEN` | unset | unset → Discord off, local channel only. With a bad token an error is logged (`디스코드 연결 실패 …`) and only Discord is off. Check with `GET /api/health` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | unset | both set → Slack channel (Socket Mode). Wrong → only Slack is off. [Slack channel](slack.en.md) |

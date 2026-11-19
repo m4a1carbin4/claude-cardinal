@@ -163,6 +163,11 @@ If the server runs with `CARDINAL_TOKEN`, open the page once with `?token=…` (
 Driven end to end in a real Chrome (Playwright), with no browser console errors:
 
 - **Open in VS Code** next to the working directory in the session detail: a `vscode://file/<cwd>` link (`?windowId=_blank`, so it always opens a new window instead of reusing one), so VS Code opens **on the machine running the browser**. It only opens the right folder when the web UI is opened on the same machine as the server (on another machine the path doesn't exist). **Copy path** is the fallback for browsers/devices that don't open the link. Hidden for deleted sessions.
+  - **Opening from another machine (SSH remote)**: when a target is set, the link becomes `vscode://vscode-remote/ssh-remote+<target>/<cwd>`, so VS Code (Remote-SSH extension) on the viewing machine opens the server's folder over SSH. `<target>` is an alias from the viewer's `~/.ssh/config` or `user@host` (IP or tailnet name work). The target is chosen in this order:
+    1. This browser's setting: type it under ⚙ next to the button (`localStorage`, since every machine's SSH setup differs). **This machine** forces a local open even when the server has a default; **Default** clears the saved value.
+    2. The server default `CARDINAL_IDE_HOST` ([server](server.en.md)).
+    3. Neither: open on this machine.
+  - The server machine needs SSH login enabled (macOS: System Settings → General → Sharing → Remote Login).
 - terminal attach and output / Screen tab (scrollback choice) / session info
 - send → reply "7" / paste only → Enter key → "5" / max 2s → "시간 초과 (partial reply)" / free-form key `Escape` → "사람이 중단함" / over 16KB disables the button with a notice
 - Result · Hook events (count) · Routes (add: @mention + auto reply)

@@ -231,6 +231,7 @@ export interface Health {
   sessions: number;
   sdk?: { enabled: boolean; default_backend: Backend; alive: number };
   admin?: { name: string; state: State; alive: boolean } | null; // 관리자 세션 (SDK 모드)
+  ide_host?: string | null; // 'VS Code 로 열기' 기본 SSH 대상 (CARDINAL_IDE_HOST)
 }
 
 export interface SendResult {

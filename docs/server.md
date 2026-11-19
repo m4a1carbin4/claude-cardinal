@@ -76,6 +76,7 @@ SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… uv run cardinal-server   # 슬
 | `CARDINAL_HOST` / `CARDINAL_PORT` | `127.0.0.1` / `7878` | `--host`, `--port`로도 |
 | `CARDINAL_TOKEN` | 없음 | 있으면 HTTP/WS 전부 `?token=` 또는 `Authorization: Bearer` |
 | `CARDINAL_CLI` | `<repo>/bin/cardinal` | |
+| `CARDINAL_IDE_HOST` | 없음 | 웹 UI "VS Code 로 열기"가 SSH 원격으로 열 대상 (`user@host` 또는 `~/.ssh/config` 별칭). `/api/health`의 `ide_host`로 내려감. 이상한 글자가 있으면 무시 |
 | `DISCORD_TOKEN` | 없음 | 없으면 디스코드 끄고 local 채널만. 잘못된 토큰이면 에러 로그(`디스코드 연결 실패 …`)를 남기고 디스코드만 꺼짐. `GET /api/health`로 확인 |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | 없음 | 둘 다 있으면 슬랙 채널 (Socket Mode). 틀리면 슬랙만 꺼짐. [슬랙 채널](slack.md) |
 
