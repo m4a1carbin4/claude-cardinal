@@ -104,6 +104,33 @@ CREATE TABLE IF NOT EXISTS deliveries (       -- 이벤트 → 세션 전달 기
   delivered_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bus_messages (    -- 세션끼리 주고받는 채널(버스) 메시지 (bus.py)
+  id          TEXT PRIMARY KEY,                 -- msg_xxxxxxxx
+  at          TEXT NOT NULL,
+  from_id     TEXT NOT NULL,                    -- 보낸 세션 고유 키 ('system' = 카디널이 알림)
+  from_name   TEXT NOT NULL,
+  to_names    TEXT NOT NULL,                    -- 받는 세션 이름들 (JSON 배열, 방송이면 보낼 때 풀어 둔 목록)
+  broadcast   INTEGER NOT NULL DEFAULT 0,
+  kind        TEXT NOT NULL,                    -- task (일 시킴, 결과 기대) | result (결과) | info (알림)
+  text        TEXT NOT NULL,
+  reply_to    TEXT,                             -- 답하는 메시지 ID
+  thread      TEXT NOT NULL,                    -- 스레드 (첫 메시지 ID)
+  depth       INTEGER NOT NULL DEFAULT 0        -- 스레드 안 몇 번째 (핑퐁 막기)
+);
+CREATE INDEX IF NOT EXISTS bus_messages_thread ON bus_messages(thread, at);
+CREATE INDEX IF NOT EXISTS bus_messages_at ON bus_messages(at);
+
+CREATE TABLE IF NOT EXISTS bus_deliveries (   -- 버스 메시지 → 받는 세션 전달 기록
+  id            INTEGER PRIMARY KEY,
+  msg_id        TEXT NOT NULL REFERENCES bus_messages(id),
+  session_id    TEXT NOT NULL,
+  session_name  TEXT NOT NULL,
+  status        TEXT NOT NULL,                  -- pending | sent | failed
+  error         TEXT,
+  at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS bus_deliveries_msg ON bus_deliveries(msg_id);
+
 CREATE TABLE IF NOT EXISTS replies (          -- 세션 → 채널 답장 기록
   id            INTEGER PRIMARY KEY,
   event_id      TEXT NOT NULL REFERENCES channel_events(id),
@@ -127,10 +154,10 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
     if r is None:
         return None
     d = dict(r)
-    for k in ("claude_args", "attachments", "files", "external_ids", "data", "sdk_options", "texts", "tools", "result"):
+    for k in ("claude_args", "attachments", "files", "external_ids", "data", "sdk_options", "texts", "tools", "result", "to_names"):
         if k in d and isinstance(d[k], str):
             d[k] = json.loads(d[k])
-    for k in ("alive", "auto_reply", "allow_bots", "enabled", "complete", "interrupted", "mcp"):
+    for k in ("alive", "auto_reply", "allow_bots", "enabled", "complete", "interrupted", "mcp", "broadcast"):
         if k in d and d[k] is not None:
             d[k] = bool(d[k])
     return d
@@ -441,3 +468,44 @@ class DB:
         return bool(
             self.one("SELECT 1 FROM replies WHERE event_id=? AND session_id=? AND status='sent'", (event_id, session_id))
         )
+
+    # ---------- 세션끼리 채널 (bus.py) ----------
+
+    def add_bus_message(self, m: dict) -> dict:
+        self.exec(
+            "INSERT INTO bus_messages (id, at, from_id, from_name, to_names, broadcast, kind, text, reply_to, thread, depth)"
+            " VALUES (:id, :at, :from_id, :from_name, :to_names, :broadcast, :kind, :text, :reply_to, :thread, :depth)",
+            {**m, "to_names": json.dumps(m["to_names"]), "broadcast": int(m.get("broadcast", False))},
+        )
+        return self.bus_message(m["id"])  # type: ignore[return-value]
+
+    def bus_message(self, msg_id: str) -> dict | None:
+        return self.one("SELECT * FROM bus_messages WHERE id=?", (msg_id,))
+
+    def bus_messages(self, limit: int = 50, session: str | None = None, thread: str | None = None) -> list[dict]:
+        """최근 것부터. session 을 주면 그 세션이 보낸 것, 받은 것, 방송(을 받은 것)만"""
+        where, params = [], []
+        if thread:
+            where.append("thread=?")
+            params.append(thread)
+        if session:
+            where.append("(from_name=? OR EXISTS (SELECT 1 FROM json_each(to_names) WHERE value=?))")
+            params += [session, session]
+        sql = "SELECT * FROM bus_messages" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY at DESC, rowid DESC LIMIT ?"
+        return self.q(sql, (*params, limit))
+
+    def start_bus_delivery(self, msg_id: str, session_id: str, session_name: str) -> int:
+        return self.exec(
+            "INSERT INTO bus_deliveries (msg_id, session_id, session_name, status, error, at) VALUES (?, ?, ?, 'pending', NULL, ?)",
+            (msg_id, session_id, session_name, now()),
+        )
+
+    def finish_bus_delivery(self, delivery_id: int, status: str, error: str | None = None) -> None:
+        self.exec("UPDATE bus_deliveries SET status=?, error=?, at=? WHERE id=?", (status, error, now(), delivery_id))
+
+    def bus_deliveries(self, msg_id: str) -> list[dict]:
+        return self.q("SELECT * FROM bus_deliveries WHERE msg_id=? ORDER BY id", (msg_id,))
+
+    def bus_recent_posts(self, from_id: str, since: str) -> int:
+        r = self.one("SELECT COUNT(*) AS n FROM bus_messages WHERE from_id=? AND at>=?", (from_id, since))
+        return int(r["n"]) if r else 0

@@ -34,6 +34,7 @@ from .drive import ATTACHMENTS, Drive, DriveError
 from .ingest import Ingestor
 from .router import Router
 from .running import running_elsewhere
+from .bus import Bus
 from .mcp_server import CardinalMcp
 from .sdk import SdkError, SdkManager, redact_options, unredact
 from .sessions import SessionError, Sessions
@@ -293,7 +294,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     router = Router(settings, db, sessions, channel_hub.publish)
     sdk_mgr.router, sdk_mgr.facade = router, sessions
     # 세션 안 모델이 카디널을 다루는 MCP (tmux·SDK 공통). SDK 세션은 여기 주소와 키로 붙음
-    cmcp = CardinalMcp(settings, db, sessions, router, ingestor, drive)
+    bus = Bus(db, sessions, channel_hub.publish)
+    cmcp = CardinalMcp(settings, db, sessions, router, ingestor, drive, bus)
     sdk_mgr.mcp_secret = cmcp.secret
     local = LocalAdapter(channel_hub.publish)
     # 스테이지 음성: 호스트 TTS 프록시·목소리 저장소 (stage_tts.py)
@@ -670,6 +672,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     # ---------- 채널 ----------
+
+    @app.get("/api/bus", dependencies=api)
+    async def bus_messages(limit: int = 50, session: str | None = None, thread: str | None = None):
+        """세션끼리 채널 메시지 (최근 것부터) + 전달 결과. session 을 주면 그 세션이 보내거나 받은 것만"""
+        msgs = db.bus_messages(min(max(limit, 1), 200), session=session, thread=thread)
+        for m in msgs:
+            m["deliveries"] = db.bus_deliveries(m["id"])
+        return msgs
 
     @app.get("/api/events", dependencies=api)
     async def channel_events(limit: int = 50):
