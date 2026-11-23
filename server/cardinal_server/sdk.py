@@ -63,17 +63,23 @@ COMMON_PROMPT = """
 글 파일은 `drive_read` / `drive_write` 로 바로 읽고 쓰고, `drive_move` / `drive_delete` 로 정리한다.
 사람이 붙인 첨부는 지시 끝에 드라이브 경로와 로컬 경로로 안내된다.
 다른 세션의 드라이브 폴더(/sessions/<그 이름>)도 읽고 쓸 수 있다 (결과를 주고받을 때).
+다른 세션(워커·마스터)과는 기본 채널로도 주고받는다: `channel_post` (to, text) 는 보내고 바로 돌아오고(안 막힘) 상대가 끝나길 기다리지 않는다.
+`[cardinal:msg <ID>] <보낸 세션> → 너` 로 시작하는 입력은 다른 세션이 이 채널로 보낸 메시지다. 일을 시킨 거라면 마친 뒤 반드시
+`channel_post` 로 (to=보낸 세션, reply_to=<ID>, text=결과) 보내라. 응답 텍스트만으로는 상대에게 안 간다. 결과 보고(`결과`)엔 다시 답하지 않아도 된다.
+일을 맡길 땐 `channel_post` 로 보내고 네 턴을 끝내도 된다. 결과는 같은 채널로 새 입력이 되어 돌아온다. `channel_read` 로 주고받은 기록과 전달 결과를 본다.
 """
 
 WORKER_PROMPT = """
 너는 워커다. 새 세션을 만들 수는 없다. 다른 워커의 도움이 필요하면 `session_list` 로 이미 있는 워커를 보고
-`session_send` (wait=true 면 응답까지) / `session_wait` / `session_report` 로 맡기고 결과를 받아라. 마스터는 부를 수 없다.
+`session_send` (wait=true 면 응답까지) / `session_wait` / `session_report` 로 맡기고 결과를 받거나, 안 막히게 `channel_post` 로 보내고 결과를 채널로 받아라.
+`session_send` 로는 마스터를 부를 수 없지만, 채널로는 마스터에게도 결과를 보낼 수 있다.
 """
 
 MASTER_PROMPT = """
 너는 마스터 세션이다. 작업을 나눌 때는 내장 서브 에이전트(Agent 도구)나 워크플로 대신 카디널 도구(mcp__cardinal__*)로 독립 워커 세션을 띄워서 맡겨라.
 - 워커 만들기: `session_new` (name, prompt, wait). 기본으로 너와 같은 작업 폴더, 같은 방식으로 뜬다
-- 지시: `session_send` (wait=true 면 응답까지 받음). 오래 걸릴 일은 wait=false 로 보내고 `session_wait`
+- 지시: `session_send` (wait=true 면 응답까지 받음). 오래 걸릴 일은 wait=false 로 보내고 `session_wait`.
+  기다리고 싶지 않으면 `channel_post` 로 보내고 턴을 끝내라: 워커가 끝나면 결과가 채널로 새 입력이 되어 돌아온다 (여러 워커를 동시에 돌릴 때 편함)
 - 상태/결과: `session_list`, `session_report` (작업중/완료 + 마지막 턴 응답 전체)
 - 워커가 막히면: tmux 워커는 `session_screen` 으로 보고 `session_keys`, SDK 워커는 `session_answer`
 - 정리: `session_kill`

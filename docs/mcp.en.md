@@ -39,12 +39,37 @@ Now:
 - Both `/mcp/worker` and `/mcp/worker/` work (`Mount` wants a trailing `/`, so a small dispatcher sits in front).
 - Mounted before the web UI catch-all (`/{path}`); otherwise `/mcp/...` falls into it (measured: 405).
 
+## Session channel (default shared channel)
+
+A session-to-session asynchronous message path that every session (master, worker, admin) shares **with no setup**. Unlike `session_send wait=true` it doesn't hold the caller until the other side finishes: posting returns immediately. It is separate from the external channels (Discord/Slack → routes).
+
+```
+A: channel_post(to="B", text="do this")  → returns at once (A may end its turn)
+        │ the server feeds it into B's input (queued after B's current work)
+        ▼
+B: [cardinal:msg msg_ab12…] A → you ... does the work →  channel_post(to="A", reply_to="msg_ab12…", text="result")
+        │ the server feeds it into A's input (starts a new turn even if A was idle)
+        ▼
+A: [cardinal:msg msg_cd34…] B → you · result for msg_ab12… ...
+```
+
+- **What the receiver sees** starts with `[cardinal:msg <ID>] <sender> → you`. For a `task` it adds a note to send the result with `channel_post(to=sender, reply_to=<ID>)`; the response text alone is not delivered.
+- **kind**: `task` (default), `result` (default when `reply_to` is given; no reply needed), `info` (notice; default for broadcasts).
+- **Broadcast** `to="*"`: masters/admin only. Goes to every other live session (each may run a turn, so use sparingly).
+- **Threads**: messages chained by `reply_to` share a `thread` (the first message ID); `channel_read(thread=…)` shows them together.
+- **When it can't be delivered** (receiver ended, or waiting on an approval/question): recorded as failed and Cardinal tells the sender with an `info` message, so nobody waits forever. Broadcasts don't notify.
+- **Guards**: 20,000 chars per message (write big things to the web drive and send the path), 20 recipients, 30 posts per minute per session, 40 levels per thread (stops endless back-and-forth).
+- **tmux sessions** use it the same way when attached to the Cardinal MCP (created while the server was up). A session without MCP can receive but can't reply on the channel.
+- **Records / watching**: DB tables `bus_messages` / `bus_deliveries`; `GET /api/bus?session=&thread=&limit=`; live on `/ws/channel` (`{"type":"bus","message":…}`, `{"type":"bus_delivery","msg_id","session","status","error"}`).
+
 ## Tools
 
 | Tool | Worker | Master | What it does |
 | --- | :-: | :-: | --- |
 | `reply(event_id, text, files[])` | ✓ | ✓ | reply to a channel event. files may be relative to the working dir; max 10, 10MB each |
 | `session_list()` | ✓ | ✓ | session list (name, role, backend, state, working dir, creator) |
+| `channel_post(to, text, reply_to?, kind?)` | ✓ | ✓ | post to the **default session-to-session channel**. Non-blocking (returns right away). `to` is one or more session names; masters/admin can broadcast with `"*"` → [session channel](#session-channel-default-shared-channel) |
+| `channel_read(limit?, thread?)` | ✓ | ✓ | messages I sent or received (oldest first), plus delivery results for the ones I sent |
 | `drive_list` `drive_read` `drive_write` `drive_move` `drive_delete` | ✓ | ✓ | work with webdrive files (list, read/write text, move, delete). A path without `/` is relative to my session folder → [webdrive](drive.en.md) |
 | `drive_upload(src, path?, keep_source?)` / `drive_load(path, dest?)` | ✓ | ✓ | move local → drive / copy drive → local |
 | `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?, attachments?)` | | ✓ | create a worker. cwd and backend default to the caller's. Records the parent |

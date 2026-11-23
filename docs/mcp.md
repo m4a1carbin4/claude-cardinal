@@ -39,12 +39,37 @@
 - `/mcp/worker`, `/mcp/worker/` 둘 다 받음 (`Mount`가 끝 `/`를 요구해서 앞에 작은 디스패처를 둠).
 - 웹 UI 전체 받기 라우트(`/{path}`)보다 먼저 붙임. 안 그러면 `/mcp/...`가 그쪽으로 빠짐 (실측: 405).
 
+## 세션 채널 (기본 공유 채널)
+
+모든 세션(마스터·워커·관리자)이 **따로 설정 없이** 같이 쓰는 세션 간 비동기 메시지 통로. `session_send wait=true`처럼 상대가 끝나길 붙잡고 기다리지 않고, 보내면 바로 돌아옴. 외부 채널(디스코드·슬랙 → 라우트)과는 별개.
+
+```
+A: channel_post(to="B", text="이거 해줘")  → 바로 돌아옴 (A는 턴을 끝내도 됨)
+        │ 서버가 B 입력으로 넣음 (B 가 작업 중이면 끝난 뒤 차례로)
+        ▼
+B: [cardinal:msg msg_ab12…] A → 너 ... 일을 하고 →  channel_post(to="A", reply_to="msg_ab12…", text="결과")
+        │ 서버가 A 입력으로 넣음 (A 가 쉬는 중이어도 새 턴이 시작됨)
+        ▼
+A: [cardinal:msg msg_cd34…] B → 너 · msg_ab12… 에 대한 결과 ...
+```
+
+- **받는 쪽 입력**은 `[cardinal:msg <ID>] <보낸 세션> → 너` 로 시작. 일(`task`)이면 결과를 `channel_post(to=보낸 세션, reply_to=<ID>)`로 보내라고 안내가 붙음. 응답 텍스트만으로는 안 감
+- **kind**: `task`(일 시킴, 기본) · `result`(결과, `reply_to`를 주면 기본, 다시 답장 안 해도 됨) · `info`(알림, 방송이면 기본)
+- **방송** `to="*"`: 마스터·관리자만. 살아있는 모든 다른 세션에 감 (세션마다 턴이 하나씩 돌 수 있으니 필요할 때만)
+- **스레드**: `reply_to`로 이어진 메시지는 같은 `thread`(첫 메시지 ID). `channel_read(thread=…)`로 묶어서 봄
+- **못 넘기면**: 받는 세션이 끝났거나 승인/질문 대기 중이면 전달 실패로 기록하고, 보낸 세션에 카디널이 `info` 메시지로 알려 줌 (기다리다 멈추지 않게). 방송은 알리지 않음
+- **안전장치**: 메시지 2만 자 (큰 건 웹드라이브에 쓰고 경로만), 한 번에 20개 세션, 세션당 1분에 30개, 스레드 40단계 (서로 계속 답하는 핑퐁 막기)
+- **tmux 세션**은 카디널 MCP에 붙어 있으면(서버가 떠 있을 때 만든 것) 똑같이 씀. 안 붙은 세션은 받을 수는 있어도 채널로 답은 못 함
+- **기록·구경**: DB `bus_messages` / `bus_deliveries`. `GET /api/bus?session=&thread=&limit=` 로 조회, `/ws/channel` 로 실시간 (`{"type":"bus","message":…}`, `{"type":"bus_delivery","msg_id","session","status","error"}`)
+
 ## 도구
 
 | 도구 | 워커 | 마스터 | 하는 일 |
 | --- | :-: | :-: | --- |
 | `reply(event_id, text, files[])` | ✓ | ✓ | 채널 이벤트에 답장. files는 작업 폴더 기준 상대 경로 가능, 최대 10개·각 10MB |
 | `session_list()` | ✓ | ✓ | 세션 목록 (이름, 역할, 방식, 상태, 작업 폴더, 만든 세션) |
+| `channel_post(to, text, reply_to?, kind?)` | ✓ | ✓ | **세션끼리 쓰는 기본 채널**에 메시지 보내기. 안 막힘 (보내고 바로 돌아옴). `to`는 세션 이름 하나/여러 개, 마스터·관리자는 `"*"`로 방송 → [세션 채널](#세션-채널-기본-공유-채널) |
+| `channel_read(limit?, thread?)` | ✓ | ✓ | 내가 보냈거나 받은 채널 메시지 (오래된 것부터) + 보낸 것의 전달 결과 |
 | `drive_list` `drive_read` `drive_write` `drive_move` `drive_delete` | ✓ | ✓ | 웹드라이브 파일 다루기 (목록, 글 읽기/쓰기, 옮기기, 지우기). 경로를 `/` 없이 쓰면 내 세션 폴더 기준 → [웹드라이브](drive.md) |
 | `drive_upload(src, path?, keep_source?)` / `drive_load(path, dest?)` | ✓ | ✓ | 로컬 → 드라이브로 옮기기 / 드라이브 → 로컬로 복사 |
 | `session_new(name, prompt?, role?, cwd?, backend?, wait?, timeout_s?, attachments?)` | | ✓ | 워커 만들기. cwd·backend 기본은 부른 세션과 같게. 부모 기록 |

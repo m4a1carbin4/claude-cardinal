@@ -28,6 +28,7 @@ from .config import Settings
 from .db import DB
 from .drive import Drive, DriveError
 from . import worktree as wtree
+from .bus import Bus, BusError
 
 log = logging.getLogger("cardinal.mcp")
 
@@ -46,7 +47,11 @@ WORKER_INSTRUCTIONS = (
     "drive_delete(지우기), 로컬 파일과 주고받기: drive_upload(로컬 → 드라이브로 옮김) drive_load(드라이브 → 로컬로 복사). "
     "드라이브 경로를 / 없이 쓰면 너의 폴더 기준. 다른 세션 폴더(/sessions/<그 이름>)도 읽고 쓸 수 있음 (결과를 주고받을 때). "
     "새 세션은 못 만들지만 이미 있는 워커에게는 session_send / session_wait / session_report 로 일을 맡기고 결과를 받을 수 있음 "
-    "(session_list 로 확인)."
+    "(session_list 로 확인). "
+    "모든 세션은 서로 부르는 기본 채널을 같이 씀: channel_post(to, text) 로 다른 세션(워커든 마스터든)에 메시지를 보내면 "
+    "기다리지 않고 바로 돌아오고, 상대는 일을 마친 뒤 같은 도구로 결과를 너에게 돌려보냄 (그 결과는 새 입력으로 들어옴). "
+    "일을 맡길 땐 channel_post 후 네 턴을 끝내도 되고, `[cardinal:msg <ID>]` 로 시작하는 입력은 이 채널 메시지임 "
+    "(받은 일을 마치면 channel_post 에 reply_to=<ID>, to=보낸 세션 으로 결과를 보내야 전달됨). channel_read 로 주고받은 기록과 전달 결과 확인."
 )
 MASTER_INSTRUCTIONS = WORKER_INSTRUCTIONS + (
     " 마스터는 일을 나눌 때 내장 서브 에이전트 대신 session_new 로 독립 워커 세션을 띄워 맡기고, "
@@ -95,8 +100,9 @@ def _json(x: Any) -> str:
 
 
 class CardinalMcp:
-    def __init__(self, settings: Settings, db: DB, sessions: Any, router: Any, ingestor: Any, drive: Drive):
+    def __init__(self, settings: Settings, db: DB, sessions: Any, router: Any, ingestor: Any, drive: Drive, bus: Bus):
         self.settings = settings
+        self.bus = bus
         self.drive = drive
         self.db = db
         self.sessions = sessions  # sessions.Sessions
@@ -190,6 +196,16 @@ class CardinalMcp:
             srv.add_tool(self.reply, name="reply", description=(
                 "외부 채널 이벤트([cardinal:event <ID>])에 답장. 응답 텍스트만으로는 전달되지 않으니 반드시 이걸로 보냄. "
                 "files: 첨부할 로컬 파일 경로 (작업 폴더 기준 상대 경로 가능, 최대 10개·각 10MB)"))
+            srv.add_tool(self.channel_post, name="channel_post", description=(
+                "세션끼리 쓰는 기본 채널에 메시지 보내기 (안 막힘: 보내고 바로 돌아옴, 상대가 끝나길 기다리지 않음). "
+                "to: 받을 세션 이름(들) (session_list 로 확인). 마스터·관리자는 \"*\" 로 살아있는 모든 세션에 방송. "
+                "text: 일 지시이거나 결과. 일을 맡기면 상대가 끝낸 뒤 결과를 같은 도구로 너에게 돌려보내고, 그건 네 새 입력(`[cardinal:msg <ID>]`)으로 들어옴 "
+                "→ 보낸 뒤 턴을 끝내도 됨. 받은 일의 결과는 reply_to=<받은 메시지 ID>, to=보낸 세션 으로 보냄 (응답 텍스트만으로는 안 감). "
+                "kind: task(일 시킴, 기본) | result(결과, reply_to 를 주면 기본) | info(알림, 답 필요 없음, 방송이면 기본). "
+                "긴 내용은 웹드라이브에 쓰고 경로만 보내 (한 메시지 2만 자까지). 못 넘기면(상대 종료·승인 대기 등) 카디널이 알려줌"))
+            srv.add_tool(self.channel_read, name="channel_read", description=(
+                "기본 채널에서 내가 보냈거나 받은 메시지 (오래된 것부터). 보낸 것엔 전달 결과(sent/pending/failed)가 같이 나옴. "
+                "thread 를 주면 그 스레드(첫 메시지 ID)만. limit 기본 20 (최대 100)"))
             srv.add_tool(self.session_list, name="session_list",
                          description="카디널 세션 목록과 상태 (이름, 역할, 방식, 상태, 작업 폴더, 만든 세션)")
             srv.add_tool(self.drive_list, name="drive_list", description=(
@@ -276,6 +292,20 @@ class CardinalMcp:
         except Exception as e:
             raise ToolError(f"답장 실패: {e}")
         return f"답장 보냄 (reply {saved['id']})"
+
+    async def channel_post(self, to: str | list[str], text: str, reply_to: str | None = None, kind: str | None = None,
+                           ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        try:
+            msg = await self.bus.post(me, to, text, reply_to=reply_to, kind=kind)
+        except BusError as e:
+            raise ToolError(str(e))
+        return _json({"id": msg["id"], "thread": msg["thread"], "to": msg["to_names"], "kind": msg["kind"],
+                      "status": "queued (전달은 뒤에서, 결과는 채널로 옴 — 기다리지 않아도 됨)"})
+
+    async def channel_read(self, limit: int = 20, thread: str | None = None, ctx: Context = None) -> str:
+        me = self._caller(ctx)
+        return _json(self.bus.read(me, limit, thread))
 
     async def session_list(self, ctx: Context = None) -> str:
         self._caller(ctx)
