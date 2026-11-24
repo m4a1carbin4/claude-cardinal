@@ -122,6 +122,15 @@ A file space shared by humans and sessions ([webdrive](drive.en.md)). The top "�
 - When a session runs `drive_upload`/`drive_write`, the folder being viewed refreshes right away via the `/ws/events` notification.
 - Input box on the conversation and send tabs: pick with "📎 파일" (or drag-and-drop / paste) and it's uploaded straight to `/sessions/<name>/attachments/` and shown as a chip. "드라이브에서" (from drive) picks an existing file. On send, the server appends a note with drive path + local path after the instruction. Attachments alone are fine too.
 
+### Session channel (the default session-to-session channel)
+
+Top nav "세션 채널" (`/#bus`). Shows, live, the messages masters, workers and the admin send each other with `channel_post` ([MCP](mcp.en.md#session-channel-default-shared-channel)). Separate from the "채널" screen, which shows external (Discord/Slack) events.
+
+- Per message: kind (지시 task / 결과 result / 알림 info), sender → recipients ("방송" for broadcasts), message ID, time, for replies `↩ <original ID> 에 대한 결과`, the text (collapsed over 400 chars, "더 보기"), and delivery per recipient (pending / sent / failed + reason).
+- Newest first. New messages and delivery results arrive over `/ws/channel`; if the connection drops and returns, the list is reloaded. The header shows the count and pending / failed totals.
+- Click a session name, or use the "세션" selector, to **filter to that session's sent/received messages**; click a message ID to **show only that thread** (clear with the ✕ on the filter chip). "스레드로 묶기" groups messages chained by replies (most recently active thread first, oldest first inside).
+- View only (no box to send from here). Data comes from `GET /api/bus`.
+
 ### Channel
 
 - For each received event: event ID, content, attachments (size, save failures), deliveries (pending/sent/failed + reason), replies (reply/auto reply, failure reason, attachment names).
@@ -135,7 +144,7 @@ If the server runs with `CARDINAL_TOKEN`, open the page once with `?token=…` (
 
 ### Choosing a screen by URL
 
-`/#s=<session name>` (session detail), `/#channel` (channel), `/#drive` (drive). The current view is reflected in the hash, so reload and bookmarks keep it.
+`/#s=<session name>` (session detail), `/#channel` (channel), `/#bus` (session channel), `/#drive` (drive). The current view is reflected in the hash, so reload and bookmarks keep it.
 
 ## Files
 
@@ -155,6 +164,7 @@ If the server runs with `CARDINAL_TOKEN`, open the page once with `?token=…` (
 | `web/src/components/SessionPanels.tsx` | Screen / Send / Result / Hook events / Routes |
 | `web/src/components/TerminalView.tsx` | xterm.js + `/ws/term` |
 | `web/src/components/DrivePanel.tsx`, `AttachBar.tsx` | webdrive explorer·editor, request attachments |
+| `web/src/components/BusPanel.tsx` | session channel (session-to-session messages, delivery status, session/thread filters, live) |
 | `web/src/components/ChannelPanel.tsx` | channel events, direct replies, local injection, local reply downloads |
 | `web/src/styles.css` | light/dark, narrow screens |
 

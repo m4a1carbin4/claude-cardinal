@@ -1,6 +1,7 @@
 // 카디널 서버 API 클라이언트. 토큰은 URL ?token= 으로 한 번 받으면 이 브라우저에 기억해 둠
 import type {
   AnswerInput,
+  BusMessage,
   ChannelEvent,
   ContextUsage,
   DriveDir,
@@ -113,6 +114,13 @@ export const api = {
   addRoute: (name: string, r: RouteInput) => req<Route>(`/sessions/${enc(name)}/routes`, json(r)),
   deleteRoute: (id: number) => req<{ ok: boolean }>(`/routes/${id}`, { method: 'DELETE' }),
   channelEvents: (limit = 50) => req<ChannelEvent[]>(`/events?limit=${limit}`),
+  // 세션끼리 쓰는 기본 채널 (최근 것부터). session: 그 세션이 보내거나 받은 것만, thread: 그 스레드만
+  bus: (limit = 100, session?: string, thread?: string) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (session) q.set('session', session);
+    if (thread) q.set('thread', thread);
+    return req<BusMessage[]>(`/bus?${q}`);
+  },
   // 채널 이벤트에 직접 답장 (cardinal reply 와 같은 API). session 은 기록용 (어느 세션 이름으로 답했는지)
   reply: (eventId: string, text: string, files: File[], session?: string) => {
     const form = new FormData();

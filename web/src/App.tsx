@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, api, hasToken, setToken } from './api';
+import { BusPanel } from './components/BusPanel';
 import { ChannelPanel } from './components/ChannelPanel';
 import { CreateSession } from './components/CreateSession';
 import { DrivePanel } from './components/DrivePanel';
@@ -8,13 +9,13 @@ import { SessionView } from './components/SessionView';
 import { DRIVE_EVENT, useInterval, useJsonSocket } from './hooks';
 import type { Health, Session } from './types';
 
-type View = 'sessions' | 'channel' | 'drive';
+type View = 'sessions' | 'channel' | 'bus' | 'drive';
 
 const SEL_KEY = 'cardinal.selected';
-// 주소 해시로 화면 고르기: #s=<세션 이름> / #channel / #drive (북마크·링크 공유용)
+// 주소 해시로 화면 고르기: #s=<세션 이름> / #channel / #bus / #drive (북마크·링크 공유용)
 const fromHash = (): { view: View; session: string | null } => {
   const h = location.hash.slice(1);
-  if (h === 'channel' || h === 'drive') return { view: h, session: null };
+  if (h === 'channel' || h === 'bus' || h === 'drive') return { view: h, session: null };
   const m = /^s=(.+)$/.exec(h);
   return { view: 'sessions', session: m ? decodeURIComponent(m[1]) : null };
 };
@@ -120,6 +121,9 @@ export default function App() {
           <button className={view === 'channel' ? 'on' : ''} onClick={() => setView('channel')}>
             채널
           </button>
+          <button className={view === 'bus' ? 'on' : ''} onClick={() => setView('bus')} title="세션끼리 주고받는 기본 채널">
+            세션 채널
+          </button>
           <button className={view === 'drive' ? 'on' : ''} onClick={() => setView('drive')}>
             드라이브
           </button>
@@ -170,6 +174,8 @@ export default function App() {
         <main className="main">
           {view === 'channel' ? (
             <ChannelPanel sessions={sessions} />
+          ) : view === 'bus' ? (
+            <BusPanel sessions={sessions} />
           ) : view === 'drive' ? (
             <div className="drive-view">
               <DrivePanel />
