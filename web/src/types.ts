@@ -225,6 +225,32 @@ export interface ChannelEvent {
   replies: Reply[];
 }
 
+// 세션끼리 쓰는 기본 채널 메시지 (/api/bus, /ws/channel 의 bus)
+export type BusKind = 'task' | 'result' | 'info';
+export interface BusDelivery {
+  id: number; // 실시간으로 받은 건 0
+  msg_id: string;
+  session_id: string;
+  session_name: string;
+  status: 'pending' | 'sent' | 'failed';
+  error: string | null;
+  at: string;
+}
+export interface BusMessage {
+  id: string;
+  at: string;
+  from_id: string;
+  from_name: string;
+  to_names: string[];
+  broadcast: boolean;
+  kind: BusKind;
+  text: string;
+  reply_to: string | null;
+  thread: string;
+  depth: number;
+  deliveries: BusDelivery[];
+}
+
 export interface Health {
   ok: boolean;
   channels: { local: string; discord: string; slack?: string };

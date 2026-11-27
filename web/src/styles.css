@@ -278,6 +278,17 @@ ul.events { list-style: none; margin: 0; padding: 0; display: flex; flex-directi
 .ev-flow { display: flex; gap: 6px; flex-wrap: wrap; }
 .ev-reply { border-left: 3px solid var(--accent); padding: 4px 10px; background: var(--surface-2); border-radius: 0 8px 8px 0; display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; }
 .ev-reply.failed { border-left-color: var(--err); }
+.bus-msg { border-left: 3px solid var(--line); }
+.bus-msg.kind-task { border-left-color: var(--busy); }
+.bus-msg.kind-result { border-left-color: var(--ok); }
+.bus-msg.kind-info { border-left-color: var(--info); }
+.bus-text.clamp { max-height: 9em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+button.bus-who { font-weight: 600; }
+button.linklike { background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; text-decoration: underline dotted; align-self: flex-start; }
+button.linklike:hover:not(:disabled) { color: var(--accent); border: none; }
+.ev-head button.linklike { text-decoration: none; align-self: auto; }
+.bus-thread { display: flex; flex-direction: column; gap: 6px; padding-left: 8px; border-left: 2px solid var(--line); }
+.bus-thread-head { display: flex; gap: 8px; align-items: center; }
 .reply-text { white-space: pre-wrap; word-break: break-word; }
 
 /* 첫 화면 */
